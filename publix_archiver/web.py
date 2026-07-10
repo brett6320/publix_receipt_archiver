@@ -51,11 +51,33 @@ def _raw_key_for(receipt_id: str):
     return None
 
 
+def _delete_receipt_artifacts(key: str) -> None:
+    """Remove a receipt's raw JSON and any generated PDF / Markdown page."""
+    (config.RAW_DIR / f"{key}.json").unlink(missing_ok=True)
+    (config.PDF_DIR / f"{key}.pdf").unlink(missing_ok=True)
+    (config.OUTPUT_DIR / "receipts" / f"{key}.md").unlink(missing_ok=True)
+
+
 def _refresh_one(receipt_id: str, do_pdf: bool) -> dict:
-    """Regenerate one receipt's Markdown page, barcode, and (optionally) PDF."""
+    """Regenerate one receipt's Markdown page, barcode, and (optionally) PDF.
+
+    If the stored receipt is an unpublished placeholder (all "Normal Sale", no
+    named products), delete it instead so it re-imports once Publix publishes the
+    real itemized receipt."""
     key = _raw_key_for(receipt_id)
     if not key:
         return {"ok": False, "error": f"receipt {receipt_id} not found on disk"}
+    from .parse import is_placeholder
+    try:
+        record = json.loads((config.RAW_DIR / f"{key}.json").read_text())
+    except Exception:
+        record = {}
+    if is_placeholder(record):
+        _delete_receipt_artifacts(key)
+        _Handler.rows = _load_rows()
+        return {"ok": True, "receipt_id": receipt_id, "key": key,
+                "deferred": True,
+                "message": "Detail not published yet — removed; will re-import next day."}
     from .markdown import generate_one
     md_ok = generate_one(key)
     pdf_ok = False
@@ -131,9 +153,14 @@ def _run_reprocess(do_pdf: bool):
     after changing raw data, or if outputs were never generated."""
     from .parse import parse_all
     from .markdown import generate_markdown
+    from .fetch import purge_placeholders
     try:
         with _JOB_LOCK:
             _JOB["log"] = []
+        purged = purge_placeholders()
+        if purged:
+            _log(f"Removed {purged} placeholder receipt(s) (all 'Normal Sale') — "
+                 "they'll re-import once Publix publishes the real detail.")
         n_raw = len(list(config.RAW_DIR.glob("*.json")))
         _set_job(state="parsing", message="Rebuilding outputs…",
                  done=0, total=1, saved=n_raw, error=None, summary=None)
@@ -1156,9 +1183,10 @@ function setTheme(t){
   const sel = document.getElementById('theme'); if(sel) sel.value = t;
 }
 // Product lookup: a receipt UPC doesn't map to a fixed URL, so link to a Publix
-// site search for the item number (opens in a new tab).
+// site search for the item number (opens in a new tab). Publix's search page
+// reads the `searchTerm` query param (not `q`).
 function itemLink(num){
-  const u = "https://www.publix.com/search?q=" + encodeURIComponent(num);
+  const u = "https://www.publix.com/search?searchTerm=" + encodeURIComponent(num);
   return `<a class="pdf" href="${u}" target="_blank" rel="noopener" title="Look up item ${num} on Publix.com">${num}</a>`;
 }
 function qs(){

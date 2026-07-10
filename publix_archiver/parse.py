@@ -177,6 +177,23 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
                    "discount_ref": upc}
 
 
+def is_placeholder(record: dict) -> bool:
+    """True if a receipt's detail hasn't fully published yet.
+
+    Publix serves same-day / very-recent receipts with line items but no product
+    catalog, so every line falls back to its generic ItemTypeDescription
+    ("Normal Sale") with no real product name. We treat "has line items but not a
+    single named product" as a not-yet-ready placeholder that should be dropped
+    and re-imported once Publix publishes the real itemized receipt (24-48h).
+    """
+    lines = record.get("ReceiptLineItems") or []
+    if not lines:
+        return False
+    products = record.get("Products") or []
+    has_named_product = any((p.get("ItemName") or "").strip() for p in products)
+    return not has_named_product
+
+
 def _receipt_key(r: dict) -> str:
     """Identity of a receipt, so the same one ingested twice collapses."""
     rid = (r.get("ReceiptId") or r.get("TransactionKey") or "").strip()

@@ -50,6 +50,14 @@ B2C_CLIENT_ID = "42e3d574-4d38-4d73-88da-1b894afb50ca"
 # further back, so an archive only grows if you run the tool regularly.
 RETENTION_DAYS = 180
 
+# Publix populates a transaction's itemized detail 24–48h after the purchase.
+# Fetching detail for a transaction younger than this just fails (the receipt
+# isn't ready), so we defer those to a later run. Override via PUBLIX_IMPORT_DELAY_HOURS.
+try:
+    IMPORT_DELAY_HOURS = int(os.environ.get("PUBLIX_IMPORT_DELAY_HOURS") or 24)
+except ValueError:
+    IMPORT_DELAY_HOURS = 24
+
 # Web server host/port. Configurable via env (PUBLIX_WEB_HOST / PUBLIX_WEB_PORT,
 # or the generic PORT). The `web --port/--host` flags override these.
 WEB_HOST = os.environ.get("PUBLIX_WEB_HOST", "127.0.0.1")
