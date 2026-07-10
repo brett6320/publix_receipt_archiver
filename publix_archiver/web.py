@@ -1183,9 +1183,10 @@ function setTheme(t){
   const sel = document.getElementById('theme'); if(sel) sel.value = t;
 }
 // Product lookup: a receipt UPC doesn't map to a fixed URL, so link to a Publix
-// site search for the item number (opens in a new tab).
+// site search for the item number (opens in a new tab). Publix's search page
+// reads the `searchTerm` query param (not `q`).
 function itemLink(num){
-  const u = "https://www.publix.com/search?q=" + encodeURIComponent(num);
+  const u = "https://www.publix.com/search?searchTerm=" + encodeURIComponent(num);
   return `<a class="pdf" href="${u}" target="_blank" rel="noopener" title="Look up item ${num} on Publix.com">${num}</a>`;
 }
 function qs(){
