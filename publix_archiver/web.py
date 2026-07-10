@@ -321,7 +321,9 @@ def _search(rows: list[dict], q: dict) -> dict:
     item_number = (q.get("item_number", [""])[0] or "").strip()
     warehouse = (q.get("warehouse", [""])[0] or "").strip().lower()
     otype_filter = (q.get("order_type", [""])[0] or "").strip().lower()
-    tax = (q.get("tax", [""])[0] or "").strip().lower()
+    # Publix per-item codes are case-sensitive (t = food tax rate vs T = taxable),
+    # so don't lowercase.
+    tax = (q.get("tax", [""])[0] or "").strip()
     sort = (q.get("sort", ["date"])[0] or "date")
     order = (q.get("order", ["desc"])[0] or "desc")
     group = (q.get("group", ["0"])[0] == "1")
@@ -350,11 +352,9 @@ def _search(rows: list[dict], q: dict) -> dict:
             return False
         if otype_filter and str(r.get("order_type", "")).lower() != otype_filter:
             return False
-        if tax == "y" and str(r.get("tax_flag", "")).upper() != "Y":
-            return False
-        if tax == "n" and str(r.get("tax_flag", "")).upper() != "N":
-            return False
-        if tax == "exempt" and str(r.get("tax_exempt", "")).upper() != "Y":
+        # Match the selected Publix code against the item's code(s). tax_flag may
+        # hold more than one letter (e.g. "MT"), so test membership.
+        if tax and tax not in str(r.get("tax_flag", "")):
             return False
         # "Has discount": keep discount lines and the items they apply to.
         if discounted_only and str(r.get("order_type", "")) != "discount" \
@@ -935,11 +935,15 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
           <option value="pharmacy">Pharmacy</option>
           <option value="greenwise">GreenWise</option>
         </select></div>
-        <div><label>Tax</label><select id="tax">
+        <div><label>Code</label><select id="tax">
           <option value="">All</option>
-          <option value="y">Taxable (Y)</option>
-          <option value="n">Non-taxable (N)</option>
-          <option value="exempt">Tax-exempt (E)</option>
+          <option value="t">Food tax rate (t)</option>
+          <option value="T">Taxable (T)</option>
+          <option value="M">Multiple tax plans (M)</option>
+          <option value="L">Locally taxed (L)</option>
+          <option value="F">SNAP eligible (F)</option>
+          <option value="P">Prescription (P)</option>
+          <option value="H">Healthcare (H)</option>
         </select></div>
         <div><label>Store</label><input id="warehouse" placeholder="name or #…"></div>
         <div><label>Min price</label><input id="min_price" type="number" step="0.01"></div>
