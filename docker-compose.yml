@@ -1,0 +1,13 @@
+services:
+  web:
+    build: .
+    image: publix-receipt-archiver
+    environment:
+      # Change the port here (or `PORT=9000 docker compose up`).
+      PORT: ${PORT:-8000}
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    volumes:
+      # Persist receipts, CSVs, PDFs, markdown, and credentials on the host.
+      - ./data:/app/data
+    restart: unless-stopped

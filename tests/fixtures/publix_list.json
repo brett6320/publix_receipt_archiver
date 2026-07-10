@@ -1,0 +1,37 @@
+{
+  "CurrentPage": 1,
+  "TotalPages": 2,
+  "TotalCount": 3,
+  "CurrentTransactions": [
+    {
+      "custtranstypeid": 1,
+      "TransactionKey": "SAMPLE_TRANSACTION_KEY",
+      "ReceiptId": "SAMPLE0000001",
+      "TransactionSource": "PurchaseHistory",
+      "FacilityId": 9999,
+      "TransactionDate": "2020-01-15T12:00:00",
+      "SalesTransactionNumber": 1234,
+      "FacilityName": "Sample Plaza",
+      "FacilityType": "R",
+      "CustomerId": 0,
+      "Amount": 4.17,
+      "Currency": "USD",
+      "ItemCount": 2
+    },
+    {
+      "custtranstypeid": 1,
+      "TransactionKey": "SAMPLE_TRANSACTION_KEY_2",
+      "ReceiptId": "SAMPLE0000002",
+      "TransactionSource": "PurchaseHistory",
+      "FacilityId": 9999,
+      "TransactionDate": "2020-01-10T09:30:00",
+      "SalesTransactionNumber": 1200,
+      "FacilityName": "Sample Plaza",
+      "FacilityType": "R",
+      "CustomerId": 0,
+      "Amount": 21.50,
+      "Currency": "USD",
+      "ItemCount": 7
+    }
+  ]
+}

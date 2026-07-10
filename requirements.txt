@@ -1,0 +1,7 @@
+# Browser automation for interactive login, and headless Chromium for PDF
+# rendering (pdf.py).
+playwright>=1.44
+
+# HTTP client for Publix's purchase-history REST API. The [http2] extra pulls in
+# `h2`, which is required because api.py creates the client with http2=True.
+httpx[http2]>=0.27

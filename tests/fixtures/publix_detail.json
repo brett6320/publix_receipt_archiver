@@ -1,0 +1,95 @@
+{
+  "ReceiptLogoId": 1,
+  "ReceiptText": "          Sample Plaza                 \n          123 Example Ave              \n            Sampletown, FL 00000        \n  BANANAS                                \n  2.00 lb @     0.59/ lb        1.18   F \n  ALMOND MILK                     3.99   \n  SAVINGS                        -1.00   \n            Order Total          4.17    \n            Grand Total          4.17    \n Credit          Payment         4.17    \n  Customer ID Accepted                   \n      Receipt ID: SAMPLE 000 0001        \n",
+  "BarcodeSrc": "",
+  "TransactionNumber": 1234,
+  "VendorCouponAmount": 0.0,
+  "StoreCouponAmount": 0.0,
+  "OrderTotal": 4.17,
+  "TaxAmount": 0.0,
+  "GrandTotal": 4.17,
+  "Products": [
+    {
+      "ItemId": 111111,
+      "ItemName": "Bananas",
+      "ItemDescription": null,
+      "PimsCode": null,
+      "RetailSubSectionNumber": "100",
+      "ItemQuantity": 1,
+      "ItemImageUrl": "https://example.invalid/images/bananas.png",
+      "ItemDetailUrl": "/pd/SAMPLE-BANANAS",
+      "SizeDescription": "",
+      "ActivationStatus": "A",
+      "BaseProductId": "SAMPLE-BANANAS",
+      "UPC": "1111",
+      "FavoriteProductId": null,
+      "Categories": null
+    },
+    {
+      "ItemId": 222222,
+      "ItemName": "Almond Milk",
+      "ItemDescription": null,
+      "PimsCode": null,
+      "RetailSubSectionNumber": "200",
+      "ItemQuantity": 1,
+      "ItemImageUrl": "https://example.invalid/images/almond-milk.png",
+      "ItemDetailUrl": "/pd/SAMPLE-MILK",
+      "SizeDescription": "64 oz",
+      "ActivationStatus": "A",
+      "BaseProductId": "SAMPLE-MILK",
+      "UPC": "2222",
+      "FavoriteProductId": null,
+      "Categories": null
+    }
+  ],
+  "ReceiptLineItems": [
+    {
+      "ItemCode": "00000000001111",
+      "ItemSeqNo": 1,
+      "ItemQty": 0,
+      "ItemWeight": 2.0,
+      "ItemPrice": 0.59,
+      "ItemAmount": 1.18,
+      "SavingAmount": 0.0,
+      "NetAmount": 1.18,
+      "ItemTypeDescription": "Normal Sale",
+      "IsGiftcardItem": 0,
+      "AccountNumber": "    ",
+      "MSUQty": 1
+    },
+    {
+      "ItemCode": "00000000002222",
+      "ItemSeqNo": 2,
+      "ItemQty": 1,
+      "ItemWeight": 0.0,
+      "ItemPrice": 3.99,
+      "ItemAmount": 3.99,
+      "SavingAmount": 1.0,
+      "NetAmount": 2.99,
+      "ItemTypeDescription": "Normal Sale",
+      "IsGiftcardItem": 0,
+      "AccountNumber": "    ",
+      "MSUQty": 1
+    }
+  ],
+  "ReceiptTenderLineItems": [
+    {
+      "TenderNumberDescription": "Credit Card",
+      "TenderAmount": 4.17,
+      "TenderFeeAmount": 0.0
+    }
+  ],
+  "custtranstypeid": 1,
+  "TransactionKey": "SAMPLE_TRANSACTION_KEY",
+  "ReceiptId": "SAMPLE0000001",
+  "TransactionSource": "PurchaseHistory",
+  "FacilityId": 9999,
+  "TransactionDate": "2020-01-15T12:00:00",
+  "SalesTransactionNumber": 1234,
+  "FacilityName": "Sample Plaza",
+  "FacilityType": null,
+  "CustomerId": 0,
+  "Amount": 4.17,
+  "Currency": "USD",
+  "ItemCount": 2
+}
