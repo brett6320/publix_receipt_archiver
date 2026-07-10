@@ -36,7 +36,7 @@ def _log(msg: str):
 
 
 def _raw_key_for(receipt_id: str):
-    """Map a search-row receipt_id (transactionBarcode) to its raw file stem."""
+    """Map a search-row receipt_id (ReceiptId) to its raw file stem."""
     import re
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", receipt_id)
     if (config.RAW_DIR / f"{safe}.json").exists():
@@ -46,7 +46,7 @@ def _raw_key_for(receipt_id: str):
             r = json.loads(f.read_text())
         except Exception:
             continue
-        if str(r.get("transactionBarcode") or "") == receipt_id:
+        if str(r.get("ReceiptId") or "") == receipt_id:
             return f.stem
     return None
 

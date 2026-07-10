@@ -64,6 +64,36 @@ def purge_placeholders(raw_dir: Path = config.RAW_DIR) -> int:
     return removed
 
 
+def _index_existing(raw_dir: Path) -> set[str]:
+    """Index receipts already on disk and return the set of their *list* keys.
+
+    Publix returns a different ReceiptId in the purchase list (an opaque hash)
+    than in the detail (the printed receipt number). We store each receipt under
+    its detail key so the filename matches the CSV `receipt_id` / PDF link, and
+    remember the list key (stashed as `_list_key`) so incremental runs can skip
+    it without re-fetching detail. Also migrates any file still saved under the
+    old list-based name to its detail key.
+    """
+    seen: set[str] = set()
+    for f in list(raw_dir.glob("*.json")):
+        try:
+            rec = json.loads(f.read_text())
+        except Exception:
+            continue
+        correct = _safe_key(rec)
+        if f.stem != correct:  # legacy file keyed by the list id — migrate it
+            target = raw_dir / f"{correct}.json"
+            if target.exists():
+                f.unlink(missing_ok=True)
+            else:
+                f.rename(target)
+        lk = rec.get("_list_key")
+        # Fall back to the detail key for legacy files with no stashed list key
+        # (they'll be re-fetched once, then skip cleanly on later runs).
+        seen.add(lk or correct)
+    return seen
+
+
 def refresh_one_receipt(
     creds: Credentials,
     transaction_key: str,
@@ -106,7 +136,10 @@ def fetch_all_receipts(
     purged = purge_placeholders(raw_dir)
     if purged:
         print(f"  Purged {purged} placeholder receipt(s) awaiting real detail.")
-    seen: set[str] = {f.stem for f in raw_dir.glob("*.json")}
+    # Index existing receipts by their *list* key (and migrate any old-style
+    # filenames), so we skip already-imported purchases and store new ones under
+    # the detail key that the CSV / PDF links use.
+    seen: set[str] = _index_existing(raw_dir)
     now = dt.datetime.now()
     delay_hours = config.IMPORT_DELAY_HOURS
     saved = 0
@@ -128,7 +161,7 @@ def fetch_all_receipts(
 
         for txn in api.iter_transactions(page_size, from_date, to_date):
             done += 1
-            key = _safe_key(txn)
+            list_key = _safe_key(txn)  # identity from the list (for skip/dedup)
             label = str(txn.get("TransactionDate") or "")[:10]
 
             # Too recent: Publix hasn't published the itemized detail yet. Defer.
@@ -142,7 +175,7 @@ def fetch_all_receipts(
                         pass
                 continue
 
-            if skip_existing and key in seen:
+            if skip_existing and list_key in seen:
                 if progress_cb:
                     try:
                         progress_cb(done, total, saved, label)
@@ -156,15 +189,18 @@ def fetch_all_receipts(
             except PublixAuthError:
                 raise
             except Exception as ex:
-                print(f"  ! detail failed for {label} ({key}): {ex}")
+                print(f"  ! detail failed for {label} ({list_key}): {ex}")
                 detail = {}
 
             record = merge_detail(txn, detail)
+            # Remember the list identity so later incremental runs skip this
+            # receipt without re-fetching its detail.
+            record["_list_key"] = list_key
             # Detail came back as an unpublished placeholder (all "Normal Sale",
             # no named products) — don't persist it; retry on a later run.
             if is_placeholder(record):
                 deferred += 1
-                print(f"  {label}: deferred ({key} detail not published yet)")
+                print(f"  {label}: deferred ({list_key} detail not published yet)")
                 if progress_cb:
                     try:
                         progress_cb(done, total, saved, label)
@@ -172,8 +208,11 @@ def fetch_all_receipts(
                         pass
                 continue
 
+            # Store under the DETAIL key so the filename matches the CSV
+            # receipt_id and the /pdf/<receipt_id> link.
+            key = _safe_key(record)
             (raw_dir / f"{key}.json").write_text(json.dumps(record, indent=2))
-            seen.add(key)
+            seen.add(list_key)
             saved += 1
             print(f"  {label}: saved {key} "
                   f"({record.get('ItemCount', '?')} items, ${record.get('Amount', '?')})")
