@@ -135,6 +135,21 @@ browser (no token to copy):
 `{"CurrentTransactions": [...]}` envelope) and saves each receipt to `data/raw/`,
 deduped by `ReceiptId`.
 
+### Backups
+
+Compressed snapshots of your imported receipts (`data/raw`) as `.tar.gz` in
+`data/backups`. In the web UI, **admins** get a Backups panel (Collect tab) to
+create, download, restore, and delete them. Restore is **additive** — receipts
+already on disk are skipped by identity, so it never creates duplicates. From the
+CLI:
+
+```bash
+python -m publix_archiver backup create
+python -m publix_archiver backup list
+python -m publix_archiver backup restore receipts-YYYYMMDD-HHMMSS.tar.gz
+python -m publix_archiver backup delete  receipts-YYYYMMDD-HHMMSS.tar.gz
+```
+
 ## Usage
 
 ```bash
