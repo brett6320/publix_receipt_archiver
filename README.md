@@ -21,6 +21,12 @@ Each receipt is saved once (keyed by its `ReceiptId`), so re-running is
 > *grows* if you run the tool regularly — capture now, and keep capturing, to
 > outlive the retention window.
 
+> 🕒 **24-hour import delay.** Publix publishes a receipt's itemized detail
+> 24–48h after purchase; before then it returns a placeholder (all "Normal
+> Sale", no product names). So `fetch` **defers** purchases younger than 24h
+> (`PUBLIX_IMPORT_DELAY_HOURS`), and any placeholder already saved is **dropped**
+> on the next fetch/refresh so it re-imports once the real receipt publishes.
+
 ## How it works
 
 1. **Auth** — the API wants a Bearer access token (the `AccessTokenJwt` cookie,

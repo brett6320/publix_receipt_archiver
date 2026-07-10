@@ -257,6 +257,23 @@ def cmd_refresh(args) -> None:
                 continue
     if key is None:
         raise SystemExit(f"Receipt {rid} not found in {config.RAW_DIR}")
+
+    # An unpublished placeholder (all "Normal Sale", no named products) is dropped
+    # so it re-imports once Publix publishes the real itemized receipt.
+    from .parse import is_placeholder
+    try:
+        record = json.loads((config.RAW_DIR / f"{key}.json").read_text())
+    except Exception:
+        record = {}
+    if is_placeholder(record):
+        (config.RAW_DIR / f"{key}.json").unlink(missing_ok=True)
+        (config.PDF_DIR / f"{key}.pdf").unlink(missing_ok=True)
+        (config.OUTPUT_DIR / "receipts" / f"{key}.md").unlink(missing_ok=True)
+        print(json.dumps({"receipt": rid, "key": key, "status": "deferred",
+                          "message": "Detail not published yet — removed; re-import next day."},
+                         indent=2))
+        return
+
     md = generate_one(key)
     pdf = render_one_pdf(key) if not args.no_pdf else False
     print(json.dumps({"receipt": rid, "key": key, "markdown": md, "pdf": pdf}, indent=2))
