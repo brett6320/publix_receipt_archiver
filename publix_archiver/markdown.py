@@ -20,7 +20,7 @@ from pathlib import Path
 from . import config
 from .parse import (STORE_KINDS, _load_receipts, _receipt_date, _num, order_type,
                     product_description, line_quantity, receipt_totals, store_name,
-                    tax_code_label, _strip_upc, _product_index)
+                    tax_code_label, item_tax_codes, _strip_upc, _product_index)
 
 _TYPE_ICON = {"store": "🛒 Store", "pharmacy": "💊 Pharmacy",
               "greenwise": "🌿 GreenWise", "discount": "🏷 Discount"}
@@ -84,11 +84,12 @@ def _receipt_page(r: dict) -> str:
     lines += [
         f"- **Items:** {totals['items']}",
         "",
-        "| Item | Qty | Unit price | Amount | Detail |",
-        "|---|--:|--:|--:|---|",
+        "| Item | Qty | Unit price | Amount | Tax | Detail |",
+        "|---|--:|--:|--:|:-:|---|",
     ]
 
-    for li in r.get("ReceiptLineItems") or []:
+    line_tax = item_tax_codes(r)  # per-item tax/benefit letter from ReceiptText
+    for i, li in enumerate(r.get("ReceiptLineItems") or []):
         upc = _strip_upc(li.get("ItemCode"))
         prod = prods.get(upc)
         desc = product_description(prod, fallback=str(li.get("ItemTypeDescription") or "").strip())
@@ -96,10 +97,11 @@ def _receipt_page(r: dict) -> str:
         qty_s = f"{qty:g}"
         amount = _money(li.get("ItemAmount"))
         detail = _product_link(prod, desc)
-        lines.append(f"| {desc or upc or 'Item'} | {qty_s} | {_money(li.get('ItemPrice'))} | {amount} | {detail} |")
+        code = line_tax[i] if i < len(line_tax) else ""
+        lines.append(f"| {desc or upc or 'Item'} | {qty_s} | {_money(li.get('ItemPrice'))} | {amount} | {code} | {detail} |")
         saving = _num(li.get("SavingAmount"))
         if saving:
-            lines.append(f"| ↳ Savings | | | -{_money(saving)} | |")
+            lines.append(f"| ↳ Savings | | | -{_money(saving)} | | |")
 
     lines += [
         "",

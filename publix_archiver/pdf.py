@@ -17,8 +17,8 @@ from playwright.sync_api import sync_playwright
 
 from . import config
 from .parse import (STORE_KINDS, order_type, product_description, line_quantity,
-                    receipt_totals, store_name, tax_code_label, _num,
-                    _receipt_date, _strip_upc, _product_index)
+                    receipt_totals, store_name, tax_code_label, item_tax_codes,
+                    _num, _receipt_date, _strip_upc, _product_index)
 
 # Chromium stamps each PDF with a wall-clock /CreationDate and /ModDate, so two
 # renders of identical content differ only in those bytes. Blank them out before
@@ -73,19 +73,26 @@ def _receipt_html(r: dict) -> str:
 
     rows = []
     tax_codes: dict[str, str] = {}
-    for li in r.get("ReceiptLineItems") or []:
+    line_tax = item_tax_codes(r)  # per-item tax/benefit letter from ReceiptText
+    for i, li in enumerate(r.get("ReceiptLineItems") or []):
         upc = _strip_upc(li.get("ItemCode"))
         prod = prods.get(upc)
         desc = product_description(prod, fallback=str(li.get("ItemTypeDescription") or "").strip())
         qty = line_quantity(li)
         qty_s = f"{qty:g}"
         amount = _num(li.get("ItemAmount"))
+        code = line_tax[i] if i < len(line_tax) else ""
+        if code:
+            tax_codes[code] = tax_code_label(code)
+        code_cell = (f"<abbr title='{html.escape(tax_code_label(code), quote=True)}'>"
+                     f"{html.escape(code)}</abbr>" if code else "")
         rows.append(
             "<tr>"
             f"<td>{html.escape(desc or upc or 'Item')}</td>"
             f"<td class='r'>{html.escape(qty_s)}</td>"
             f"<td class='r'>{_fmt_money(li.get('ItemPrice'))}</td>"
             f"<td class='r'>{_fmt_money(amount)}</td>"
+            f"<td class='c'>{code_cell}</td>"
             "</tr>"
         )
         saving = _num(li.get("SavingAmount"))
@@ -95,10 +102,11 @@ def _receipt_html(r: dict) -> str:
                 f"<td>↳ Savings</td>"
                 f"<td class='r'></td><td class='r'></td>"
                 f"<td class='r'>-{_fmt_money(saving)}</td>"
+                f"<td class='c'></td>"
                 "</tr>"
             )
 
-    body_rows = "\n".join(rows) or "<tr><td colspan=4>No line items</td></tr>"
+    body_rows = "\n".join(rows) or "<tr><td colspan=5>No line items</td></tr>"
 
     # Tenders (how it was paid).
     tender_rows = []
@@ -106,9 +114,9 @@ def _receipt_html(r: dict) -> str:
         label = html.escape(str(t.get("TenderNumberDescription") or "Payment"))
         tender_rows.append(
             f"<tr><td colspan=3 class='r'>{label}</td>"
-            f"<td class='r'>{_fmt_money(t.get('TenderAmount'))}</td></tr>"
+            f"<td class='r'>{_fmt_money(t.get('TenderAmount'))}</td><td class='c'></td></tr>"
         )
-    tender_block = ("<tr class='sec'><td colspan=4>Payment</td></tr>" + "".join(tender_rows)
+    tender_block = ("<tr class='sec'><td colspan=5>Payment</td></tr>" + "".join(tender_rows)
                     if tender_rows else "")
 
     # Ready-made barcode image (data-URI) — embed directly.
@@ -123,13 +131,12 @@ def _receipt_html(r: dict) -> str:
     facsimile = (f"<h2>Printed receipt</h2><pre class='facsimile'>{html.escape(rtext)}</pre>"
                  if rtext.strip() else "")
 
-    # Tax-letter legend (Publix prints these in ReceiptText; spell them out).
-    for code in ("t", "T", "M", "L", "F", "P", "H"):
-        if re.search(rf"(?m)\s{code}\s*$", rtext):
-            tax_codes[code] = tax_code_label(code)
-    legend_items = [f"<b>{html.escape(c)}</b> = {html.escape(lbl)}"
-                    for c, lbl in tax_codes.items() if lbl]
-    tax_legend = (f"<div class='legend'>Codes: {' · '.join(legend_items)}</div>"
+    # Tax-letter legend — spell out only the single-letter codes that appear on
+    # this receipt's items (tax_codes was filled while building the rows above).
+    present = set("".join(tax_codes.keys()))
+    legend_items = [f"<b>{c}</b> = {html.escape(tax_code_label(c))}"
+                    for c in ("t", "T", "M", "L", "F", "P", "H") if c in present]
+    tax_legend = (f"<div class='legend'>Tax codes: {' · '.join(legend_items)}</div>"
                   if legend_items else "")
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><style>
@@ -140,6 +147,8 @@ def _receipt_html(r: dict) -> str:
       table {{ width:100%; border-collapse:collapse; font-size:12px; }}
       th,td {{ border-bottom:1px solid #ddd; padding:4px 6px; text-align:left; }}
       td.r, th.r {{ text-align:right; }}
+      td.c, th.c {{ text-align:center; }}
+      abbr {{ text-decoration:none; border-bottom:1px dotted #999; cursor:help; }}
       tr.disc td {{ color:#666; font-style:italic; border-bottom:1px solid #f0f0f0; }}
       tr.sec td {{ font-weight:bold; border-top:2px solid #333; padding-top:8px; }}
       tfoot td {{ font-weight:bold; border-top:2px solid #333; }}
@@ -157,13 +166,13 @@ def _receipt_html(r: dict) -> str:
       {rid_block}
       {barcode_block}
       <table>
-        <thead><tr><th>Item</th><th class='r'>Qty</th><th class='r'>Unit price</th><th class='r'>Amount</th></tr></thead>
+        <thead><tr><th>Item</th><th class='r'>Qty</th><th class='r'>Unit price</th><th class='r'>Amount</th><th class='c'>Tax</th></tr></thead>
         <tbody>{body_rows}</tbody>
         <tfoot>
-          <tr><td colspan=3 class='r'>Subtotal</td><td class='r'>{_fmt_money(totals['subtotal'])}</td></tr>
-          <tr><td colspan=3 class='r'>Tax</td><td class='r'>{_fmt_money(totals['taxes'])}</td></tr>
-          <tr><td colspan=3 class='r'>Total</td><td class='r'>{_fmt_money(totals['total'])}</td></tr>
-          <tr><td colspan=3 class='r'>Savings</td><td class='r'>{_fmt_money(totals['instant_savings'])}</td></tr>
+          <tr><td colspan=3 class='r'>Subtotal</td><td class='r'>{_fmt_money(totals['subtotal'])}</td><td class='c'></td></tr>
+          <tr><td colspan=3 class='r'>Tax</td><td class='r'>{_fmt_money(totals['taxes'])}</td><td class='c'></td></tr>
+          <tr><td colspan=3 class='r'>Total</td><td class='r'>{_fmt_money(totals['total'])}</td><td class='c'></td></tr>
+          <tr><td colspan=3 class='r'>Savings</td><td class='r'>{_fmt_money(totals['instant_savings'])}</td><td class='c'></td></tr>
           {tender_block}
         </tfoot>
       </table>

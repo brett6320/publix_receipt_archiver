@@ -959,6 +959,7 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
       </div>
     </div>
     <div class="tablewrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+    <div id="taxLegend" style="color:var(--muted);font-size:11px;margin:8px 2px 0;line-height:1.6;opacity:.85"></div>
   </div>
 </div>
 
@@ -1186,6 +1187,13 @@ const TAX_TIP = {
   "H": "Healthcare product",
 };
 function taxTip(code){ return TAX_TIP[code] || (code ? "Publix code "+code : ""); }
+// Subtle Tax-code legend under the results table.
+(function setTaxLegend(){
+  var el = document.getElementById("taxLegend");
+  if(!el){ document.addEventListener("DOMContentLoaded", setTaxLegend); return; }
+  el.innerHTML = "Tax codes: " + Object.keys(TAX_TIP)
+    .map(function(c){ return "<b>"+c+"</b> "+TAX_TIP[c]; }).join(" · ");
+})();
 function money(v){ return "$"+(Number(v)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
 // Well-separated color per order: golden-angle hue steps (137.5°) by display
 // order guarantee consecutive orders are far apart on the wheel; alternating
