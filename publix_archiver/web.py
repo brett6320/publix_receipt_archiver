@@ -153,7 +153,7 @@ def _run_reprocess(do_pdf: bool):
     after changing raw data, or if outputs were never generated."""
     from .parse import parse_all
     from .markdown import generate_markdown
-    from .fetch import purge_placeholders
+    from .fetch import purge_placeholders, _index_existing
     try:
         with _JOB_LOCK:
             _JOB["log"] = []
@@ -161,6 +161,9 @@ def _run_reprocess(do_pdf: bool):
         if purged:
             _log(f"Removed {purged} placeholder receipt(s) (all 'Normal Sale') — "
                  "they'll re-import once Publix publishes the real detail.")
+        # Repair any receipts still saved under the old list-key filename so the
+        # PDF/markdown links (which use the detail ReceiptId) resolve.
+        _index_existing(config.RAW_DIR)
         n_raw = len(list(config.RAW_DIR.glob("*.json")))
         _set_job(state="parsing", message="Rebuilding outputs…",
                  done=0, total=1, saved=n_raw, error=None, summary=None)
@@ -517,8 +520,25 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/collect/status":
             self._send(200, json.dumps(_job_snapshot()).encode())
         elif path.startswith("/pdf/"):
-            name = path[len("/pdf/"):]
-            pdf = config.PDF_DIR / f"{name}.pdf"
+            from urllib.parse import unquote
+            name = unquote(path[len("/pdf/"):])
+            # Resolve to the receipt's raw file stem by ReceiptId — works even if
+            # the file is still saved under the old list-key name.
+            key = _raw_key_for(name)
+            if not key:
+                self._send(404, b'{"error":"receipt not found"}')
+                return
+            pdf = config.PDF_DIR / f"{key}.pdf"
+            if not pdf.exists():
+                # Render on demand so a link works even when batch rendering
+                # hasn't run (or ran before the receipt was imported).
+                try:
+                    from .pdf import render_one_pdf
+                    render_one_pdf(key)
+                except Exception as ex:
+                    self._send(500, json.dumps(
+                        {"error": f"pdf render failed: {ex}"}).encode())
+                    return
             if pdf.exists():
                 self._send(200, pdf.read_bytes(), "application/pdf")
             else:

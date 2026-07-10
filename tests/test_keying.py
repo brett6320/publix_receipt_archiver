@@ -54,7 +54,25 @@ def test_index_existing_migrates_legacy_filename():
     assert "180876R772138" in seen
 
 
+def test_raw_key_for_resolves_legacy_named_file():
+    """The /pdf/<ReceiptId> route must find a receipt even when its file is still
+    saved under the old list-key name (matched by the ReceiptId inside)."""
+    from publix_archiver import web, config
+    tmp = Path(tempfile.mkdtemp())
+    old = config.RAW_DIR
+    config.RAW_DIR = tmp
+    try:
+        rec = {"ReceiptId": "180876R772138",
+               "ReceiptLineItems": [{}], "Products": [{"ItemName": "x"}]}
+        (tmp / "nm_hHFzdyeNVYnE8jmDlaQ__.json").write_text(json.dumps(rec))
+        assert web._raw_key_for("180876R772138") == "nm_hHFzdyeNVYnE8jmDlaQ__"
+        assert web._raw_key_for("nope") is None
+    finally:
+        config.RAW_DIR = old
+
+
 if __name__ == "__main__":
     test_record_key_matches_parse_receipt_id()
     test_index_existing_migrates_legacy_filename()
+    test_raw_key_for_resolves_legacy_named_file()
     print("keying tests OK")
