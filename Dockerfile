@@ -23,5 +23,6 @@ VOLUME /app/data
 ENV PORT=8000
 EXPOSE ${PORT}
 
-# Shell form so $PORT is expanded; bind to all interfaces for host reachability.
-CMD python -m publix_archiver web --host 0.0.0.0 --port "${PORT}"
+# Exec (JSON) form for correct signal handling; sh -c still expands $PORT.
+# Bind to all interfaces for host reachability.
+CMD ["sh", "-c", "python -m publix_archiver web --host 0.0.0.0 --port ${PORT}"]
