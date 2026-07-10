@@ -84,7 +84,7 @@ def _receipt_page(r: dict) -> str:
     lines += [
         f"- **Items:** {totals['items']}",
         "",
-        "| Item | Qty | Unit price | Amount | Tax | Detail |",
+        "| Item | Qty | Unit price | Amount | Code | Detail |",
         "|---|--:|--:|--:|:-:|---|",
     ]
 
@@ -129,7 +129,7 @@ def _receipt_page(r: dict) -> str:
             codes[c] = tax_code_label(c)
     legend = [f"**{c}** = {lbl}" for c, lbl in codes.items() if lbl]
     if legend:
-        lines += ["", "*Codes: " + " · ".join(legend) + "*"]
+        lines += ["", "*What these codes mean: " + " · ".join(legend) + "*"]
 
     if rtext.strip():
         lines += ["", "## Printed receipt", "", "```", rtext.rstrip(), "```"]

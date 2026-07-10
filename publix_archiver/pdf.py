@@ -136,7 +136,7 @@ def _receipt_html(r: dict) -> str:
     present = set("".join(tax_codes.keys()))
     legend_items = [f"<b>{c}</b> = {html.escape(tax_code_label(c))}"
                     for c in ("t", "T", "M", "L", "F", "P", "H") if c in present]
-    tax_legend = (f"<div class='legend'>Tax codes: {' · '.join(legend_items)}</div>"
+    tax_legend = (f"<div class='legend'>What these codes mean: {' · '.join(legend_items)}</div>"
                   if legend_items else "")
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><style>
@@ -166,7 +166,7 @@ def _receipt_html(r: dict) -> str:
       {rid_block}
       {barcode_block}
       <table>
-        <thead><tr><th>Item</th><th class='r'>Qty</th><th class='r'>Unit price</th><th class='r'>Amount</th><th class='c'>Tax</th></tr></thead>
+        <thead><tr><th>Item</th><th class='r'>Qty</th><th class='r'>Unit price</th><th class='r'>Amount</th><th class='c'>Code</th></tr></thead>
         <tbody>{body_rows}</tbody>
         <tfoot>
           <tr><td colspan=3 class='r'>Subtotal</td><td class='r'>{_fmt_money(totals['subtotal'])}</td><td class='c'></td></tr>
