@@ -78,11 +78,47 @@ TAX_CODE_LABELS = {
 
 
 def tax_code_label(code) -> str:
-    """Human-readable meaning of a per-line tax/benefit letter ('' if none)."""
+    """Human-readable meaning of a per-line tax/benefit letter ('' if none).
+
+    Handles multi-letter codes (e.g. 'MT') by joining each letter's label."""
     code = str(code or "").strip()
     if not code:
         return ""
-    return TAX_CODE_LABELS.get(code, f"Publix code {code}")
+    parts = [TAX_CODE_LABELS.get(ch, f"Publix code {ch}") for ch in code]
+    return ", ".join(parts)
+
+
+def _decode_receipt_text(text) -> str:
+    """ReceiptText escapes newlines as literal \\n and/or &#10; entities."""
+    return str(text or "").replace("&#10;", "\n").replace("\\n", "\n")
+
+
+# An item line in ReceiptText ends with the extended amount followed by the tax
+# /benefit letter(s), e.g. "1.40 lb @ 2.99/ lb   4.19   F". Totals/savings lines
+# end with a bare amount (no letter), so they never match.
+_TEXT_AMT_TAX = re.compile(r"([\d,]+\.\d{2})\s+([tTMLFPH]+)\s*$")
+
+
+def item_tax_codes(record: dict) -> list[str]:
+    """Per-item tax/benefit letters, aligned to record['ReceiptLineItems'].
+
+    Publix doesn't return a per-line tax field — the letter is only printed in
+    ReceiptText — so we read it back out, matching each line item to its printed
+    line by extended amount. Returns '' for items the receipt prints no letter on.
+    """
+    from collections import defaultdict, deque
+    text = _decode_receipt_text(record.get("ReceiptText"))
+    by_amt: dict[float, deque] = defaultdict(deque)
+    for line in text.splitlines():
+        m = _TEXT_AMT_TAX.search(line)
+        if m:
+            amt = round(float(m.group(1).replace(",", "")), 2)
+            by_amt[amt].append(m.group(2))
+    codes: list[str] = []
+    for li in record.get("ReceiptLineItems") or []:
+        dq = by_amt.get(_num(li.get("ItemAmount")))
+        codes.append(dq.popleft() if dq else "")
+    return codes
 
 
 def _strip_upc(code) -> str:
@@ -135,8 +171,9 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
     receipt_id = receipt.get("ReceiptId") or receipt.get("TransactionKey") or ""
     otype = order_type(receipt)
     prods = _product_index(receipt)
+    tax_codes = item_tax_codes(receipt)  # per-item tax/benefit letter from ReceiptText
 
-    for li in receipt.get("ReceiptLineItems") or []:
+    for idx, li in enumerate(receipt.get("ReceiptLineItems") or []):
         upc = _strip_upc(li.get("ItemCode"))
         prod = prods.get(upc)
         desc = product_description(prod, fallback=str(li.get("ItemTypeDescription") or "").strip())
@@ -150,7 +187,7 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
             "unit_price": _num(li.get("ItemPrice")),
             "amount": amount,
             "department": str(prod.get("RetailSubSectionNumber") or "").strip() if prod else "",
-            "tax_flag": "",  # Publix prints benefit letters in ReceiptText, not per-line JSON
+            "tax_flag": tax_codes[idx] if idx < len(tax_codes) else "",
             "store": store,
             "store_number": store_no,
             "receipt_id": receipt_id,
@@ -172,6 +209,7 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
                    "unit_qty": 1,
                    "unit_price": -saving,
                    "amount": -saving,
+                   "tax_flag": "",  # a savings line carries no tax code
                    "tax_exempt": "",
                    "order_type": "discount",
                    "discount_ref": upc}
