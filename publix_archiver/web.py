@@ -1163,7 +1163,7 @@ const inputs = ["q","date_from","date_to","item_number","order_type","tax","ware
 let sort = "date", order = "desc";
 const COLS = {
   line: [["date","Date",0],["order_type","Type",0],["item_number","Item #",0],["description","Description",0],
-         ["unit_qty","Qty",1],["unit_price","Unit $",1],["amount","Amount",1],["tax_flag","Tax",0],
+         ["unit_qty","Qty",1],["unit_price","Unit $",1],["amount","Amount",1],["tax_flag","Code",0],
          ["store","Store",0],["store_number","Store #",0],["receipt_id","Receipt",0]],
   group: [["order_type","Type",0],["item_number","Item #",0],["description","Description",0],
           ["times_purchased","Times",1],["total_qty","Total Qty",1],
@@ -1191,7 +1191,7 @@ function taxTip(code){ return TAX_TIP[code] || (code ? "Publix code "+code : "")
 (function setTaxLegend(){
   var el = document.getElementById("taxLegend");
   if(!el){ document.addEventListener("DOMContentLoaded", setTaxLegend); return; }
-  el.innerHTML = "Tax codes: " + Object.keys(TAX_TIP)
+  el.innerHTML = "What these codes mean: " + Object.keys(TAX_TIP)
     .map(function(c){ return "<b>"+c+"</b> "+TAX_TIP[c]; }).join(" · ");
 })();
 function money(v){ return "$"+(Number(v)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
