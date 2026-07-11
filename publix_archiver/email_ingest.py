@@ -1,0 +1,419 @@
+"""Ingest Publix receipt emails into the same raw-receipt store as the API path.
+
+Publix can email an itemized e-receipt (enable it in Receipt Preferences). The
+email is an HTML body that renders the printed register receipt — store, items
+with tax/benefit letters, per-item "You saved" lines, and totals — plus a
+Receipt ID that matches the API's ReceiptId format, so an emailed receipt
+deduplicates against the same receipt fetched from the API.
+
+Publix uses more than one email template (e.g. the tax letter before vs after
+the amount, ``Total`` vs ``Grand Total``, a labelled vs bare Receipt ID); the
+parser handles both. Only genuine Publix receipt emails are ingested; anything
+else is ignored.
+"""
+from __future__ import annotations
+
+import email
+import re
+from email import policy
+from email.message import EmailMessage
+from html import unescape
+from pathlib import Path
+
+from . import config
+
+# A Publix receipt email comes from a publix.com sender with this subject.
+_SENDER_RE = re.compile(r"@(?:[\w-]+\.)*publix\.com", re.I)
+_SUBJECT_RE = re.compile(r"publix receipt", re.I)
+
+_TAXLET = set("tTMLFPH")
+_AMT_RE = re.compile(r"\d+\.\d{2}")
+# Receipt id: store(4) + 2-3 alphanum + 3 digits + 3 digits, e.g. "1808 B5Q 710 114".
+_RID_PAT = r"\d{4}\s+[0-9A-Za-z]{2,3}\s+\d{3}\s+\d{3}"
+_RID_LABELLED = re.compile(r"Receipt ID:\s*(" + _RID_PAT + r")")
+_RID_BARE = re.compile(r"^(" + _RID_PAT + r")\s*$")
+_DATE = re.compile(r"(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)?", re.I)
+_STORE_NUM = re.compile(r"(?:\bS|store\s+)(\d{3,5})", re.I)
+_SAVED = re.compile(r"You saved:?\s*\$?(\d+\.\d{2})", re.I)
+_ADDRESS = re.compile(r"^\d+\s+\S", )  # a street address starts with a number
+
+
+def _num(v) -> float:
+    try:
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# ---- email → text ---------------------------------------------------------
+
+def _html_to_text(html: str) -> str:
+    t = re.sub(r"(?is)<(script|style).*?</\1>", "", html)
+    t = re.sub(r"(?i)<br\s*/?>", "\n", t)
+    t = re.sub(r"(?i)</(tr|div|p|td|table|li)>", "\n", t)
+    t = re.sub(r"(?s)<[^>]+>", " ", t)
+    t = unescape(t).replace("‌", " ").replace("\xa0", " ")
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in t.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def _receipt_text(msg: EmailMessage) -> str:
+    """Flatten the receipt text. Gathers every HTML (or plain) part — including
+    an original attached inside a forward (message/rfc822) — so the receipt is
+    found wherever it lives."""
+    htmls: list[str] = []
+    texts: list[str] = []
+    for part in msg.walk():
+        ct = part.get_content_type()
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        body = payload.decode(part.get_content_charset() or "utf-8", "replace")
+        if ct == "text/html":
+            htmls.append(body)
+        elif ct == "text/plain":
+            texts.append(body)
+    if htmls:
+        return "\n".join(_html_to_text(h) for h in htmls)
+    return "\n".join(texts)
+
+
+def is_publix_receipt(msg: EmailMessage) -> bool:
+    """True only for a genuine Publix receipt — content-based, so it still works
+    when the receipt was *forwarded* (From/Subject become the forwarder's).
+
+    Requires a Publix marker plus the two hard signals of a real receipt: a
+    Receipt ID and a grand total.
+    """
+    text = _receipt_text(msg)
+    haystack = "\n".join([str(msg.get("From", "")), str(msg.get("Subject", "")), text])
+    has_publix = bool(re.search(r"publix", haystack, re.I))
+    return bool(has_publix and _find_receipt_id(text) and _find_total(text) is not None)
+
+
+# ---- receipt text → record ------------------------------------------------
+
+def _find_receipt_id(text: str):
+    m = _RID_LABELLED.search(text)
+    if m:
+        return re.sub(r"\s+", "", m.group(1))
+    for ln in text.splitlines():
+        m = _RID_BARE.match(ln.strip())
+        if m:
+            return re.sub(r"\s+", "", m.group(1))
+    return None
+
+
+def _find_total(text: str):
+    """Grand total = a line starting with 'Total' or 'Grand Total' (not Sub/Order)."""
+    for ln in text.splitlines():
+        s = ln.strip()
+        if re.match(r"(?i)^(grand\s+total|total)\b", s):
+            amts = _AMT_RE.findall(s)
+            if amts:
+                return _num(amts[-1])
+    return None
+
+
+def _find_labelled_amount(text: str, label_re: str):
+    for ln in text.splitlines():
+        if re.match(label_re, ln.strip(), re.I):
+            amts = _AMT_RE.findall(ln)
+            if amts:
+                return _num(amts[-1])
+    return None
+
+
+def _store_name(text: str) -> str:
+    lines = [l.strip() for l in text.splitlines()]
+    for i, ln in enumerate(lines):
+        if _ADDRESS.match(ln) and i > 0:
+            for j in range(i - 1, -1, -1):
+                cand = lines[j]
+                if cand and "publix" not in cand.lower() and "thank you" not in cand.lower():
+                    return cand
+            break
+    return ""
+
+
+def _split_amount_code(line: str):
+    """Return (item_amount, tax_code, text_without_them) for an item line.
+
+    The item total is the LAST amount on the line (qty/weight lines carry a unit
+    price first). The tax letter is a lone t/T/M/L/F/P/H immediately before or
+    after that amount (templates differ on which side)."""
+    amts = list(_AMT_RE.finditer(line))
+    if not amts:
+        return None, "", line
+    last = amts[-1]
+    amount = _num(last.group(0))
+    before, after = line[:last.start()], line[last.end():]
+    code = ""
+    a_tokens = after.split()
+    if a_tokens and a_tokens[0] in _TAXLET and len(a_tokens[0]) == 1:
+        code = a_tokens[0]
+        after = after.replace(a_tokens[0], "", 1)
+    else:
+        b_tokens = before.split()
+        if b_tokens and b_tokens[-1] in _TAXLET and len(b_tokens[-1]) == 1:
+            code = b_tokens[-1]
+            before = before[:before.rstrip().rfind(b_tokens[-1])]
+    return amount, code, (before + " " + after)
+
+
+def _trailing_code(line: str) -> str:
+    toks = line.split()
+    return toks[-1] if toks and toks[-1] in _TAXLET and len(toks[-1]) == 1 else ""
+
+
+def _parse_items(text: str) -> list[dict]:
+    lines = text.splitlines()
+    start = 0
+    for i, ln in enumerate(lines):
+        if re.search(r"Store Manager|\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}", ln):
+            start = i + 1
+    end = len(lines)
+    for i, ln in enumerate(lines):
+        if re.match(r"(?i)^(order total|subtotal)\b", ln.strip()):
+            end = i
+            break
+
+    items: list[dict] = []
+    pending_desc, pending_code = "", ""
+    for ln in lines[start:end]:
+        s = ln.strip()
+        if not s:
+            continue
+        msaved = _SAVED.search(s)
+        if msaved:
+            if items:
+                items[-1]["SavingAmount"] = _num(msaved.group(1))
+            continue
+        if not _AMT_RE.search(s):  # a description line (maybe with a trailing code)
+            pending_code = _trailing_code(s)
+            pending_desc = s[:s.rstrip().rfind(pending_code)].strip() if pending_code else s
+            continue
+
+        amount, code, rest = _split_amount_code(s)
+        if amount is None:
+            continue
+        cont = "@" in s
+        qty, weight, unit = 1, 0.0, 0.0
+        if cont:
+            desc = pending_desc or re.sub(r"\d.*$", "", rest).strip()
+            code = code or pending_code
+            mw = re.search(r"([\d.]+)\s*lb\s*@\s*\$?(\d+\.\d{2})", s, re.I)
+            mq = re.search(r"^\s*(\d+)\s*@", s)
+            if mw:
+                weight, unit = _num(mw.group(1)), _num(mw.group(2))
+            elif mq:
+                qty = int(mq.group(1))
+        else:
+            desc = re.sub(r"\s{2,}", " ", rest).strip()
+        pending_desc, pending_code = "", ""
+        if not desc:
+            continue
+        items.append({
+            "ItemCode": "",
+            "ItemTypeDescription": desc,   # register description (no catalog in email)
+            "TaxCode": code,
+            "ItemQty": 0 if weight else qty,
+            "ItemWeight": weight,
+            "ItemPrice": unit or amount,
+            "ItemAmount": amount,
+            "SavingAmount": 0.0,
+            "NetAmount": amount,           # email amounts are what was paid
+        })
+    return items
+
+
+def parse_receipt_text(text: str) -> dict | None:
+    receipt_id = _find_receipt_id(text)
+    grand = _find_total(text)
+    if not receipt_id or grand is None:
+        return None
+    tax = _find_labelled_amount(text, r"sales tax") or 0.0
+    order_total = (_find_labelled_amount(text, r"order total")
+                   or _find_labelled_amount(text, r"subtotal") or grand)
+
+    facility_id = int(receipt_id[:4]) if receipt_id[:4].isdigit() else 0
+    m_store = _STORE_NUM.search(text)
+    if m_store and not facility_id:
+        facility_id = int(m_store.group(1))
+
+    txn_date = ""
+    m_date = _DATE.search(text)
+    if m_date:
+        mm, dd, yyyy, hh, mi, ampm = m_date.groups()
+        hour = int(hh)
+        if ampm:
+            ampm = ampm.upper()
+            if ampm == "PM" and hour != 12:
+                hour += 12
+            elif ampm == "AM" and hour == 12:
+                hour = 0
+        txn_date = f"{yyyy}-{mm}-{dd}T{hour:02d}:{mi}:00"
+
+    items = _parse_items(text)
+    return {
+        "ReceiptId": receipt_id,
+        "Source": "email",
+        "FacilityId": facility_id,
+        "FacilityName": _store_name(text),
+        "TransactionDate": txn_date,
+        "GrandTotal": grand,
+        "OrderTotal": order_total,
+        "TaxAmount": tax,
+        "ReceiptText": text,
+        "Products": [],
+        "ReceiptLineItems": items,
+        "ItemCount": len(items),
+    }
+
+
+def parse_eml(raw: bytes | str) -> dict | None:
+    """Parse a raw .eml into a record, or None if it isn't a Publix receipt."""
+    if isinstance(raw, bytes):
+        msg = email.message_from_bytes(raw, policy=policy.default)
+    else:
+        msg = email.message_from_string(raw, policy=policy.default)
+    if not is_publix_receipt(msg):
+        return None
+    return parse_receipt_text(_receipt_text(msg))
+
+
+def ingest_eml_paths(paths, raw_dir: Path = config.RAW_DIR) -> dict:
+    """Ingest .eml files/dirs. Non-receipt emails are skipped. Deduped by key."""
+    import json
+    from .fetch import _safe_key
+    config.ensure_dirs()
+    files: list[Path] = []
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            files.extend(sorted(p.rglob("*.eml")))
+        elif p.suffix.lower() == ".eml":
+            files.append(p)
+    existing = {f.stem for f in raw_dir.glob("*.json")}
+    saved = skipped = ignored = 0
+    for f in files:
+        rec = parse_eml(f.read_bytes())
+        if rec is None:
+            ignored += 1
+            continue
+        key = _safe_key(rec)
+        if key in existing:
+            skipped += 1
+            continue
+        (raw_dir / f"{key}.json").write_text(json.dumps(rec, indent=2))
+        existing.add(key)
+        saved += 1
+    return {"files": len(files), "saved": saved,
+            "skipped_existing": skipped, "ignored_non_receipt": ignored}
+
+
+# ---- Cloudflare Queue pull consumer + R2 payload store ---------------------
+
+def _r2_client(s: dict):
+    """S3-compatible client for the Cloudflare R2 bucket (needs boto3)."""
+    try:
+        import boto3
+    except ImportError as ex:  # pragma: no cover
+        raise RuntimeError(
+            "boto3 is required for R2/queue email ingestion (pip install boto3).") from ex
+    from botocore.config import Config as _Cfg
+    return boto3.client(
+        "s3", endpoint_url=s["r2_endpoint"],
+        aws_access_key_id=s["r2_access_key_id"],
+        aws_secret_access_key=s["r2_secret_access_key"],
+        region_name="auto", config=_Cfg(signature_version="s3v4"))
+
+
+def _queue_url(s: dict, action: str) -> str:
+    return (f"https://api.cloudflare.com/client/v4/accounts/{s['cf_account_id']}"
+            f"/queues/{s['cf_queue_id']}/messages/{action}")
+
+
+def _queue_headers(s: dict) -> dict:
+    return {"Authorization": f"Bearer {s['cf_api_token']}",
+            "Content-Type": "application/json"}
+
+
+def _msg_r2_key(body) -> str | None:
+    """Extract the R2 object key from a queue message body ({key,bucket} or str)."""
+    if isinstance(body, dict):
+        return body.get("key") or body.get("object") or body.get("Key")
+    if isinstance(body, str):
+        return body or None
+    return None
+
+
+def pull_from_queue(raw_dir: Path = config.RAW_DIR, delete: bool = True,
+                    max_batches: int = 20, http=None, r2=None) -> dict:
+    """Pull queued R2 references, ingest each referenced .eml, delete the object
+    and ack the message. Retries (leaves un-acked) on transient errors so the
+    queue redelivers. Deduped by ReceiptId. Returns a run summary.
+
+    `http` (an httpx.Client) and `r2` (an S3 client) can be injected for tests.
+    """
+    import json
+    s = config.email_settings()
+    bucket = s["r2_bucket"]
+    if http is None:
+        if not config.email_ingest_configured():
+            raise RuntimeError("Email ingestion is not configured "
+                               "(set R2 + Cloudflare Queue settings in the admin UI or env).")
+        import httpx
+        http = httpx.Client(timeout=30.0)
+    if r2 is None:
+        r2 = _r2_client(s)
+    config.ensure_dirs()
+    existing = {f.stem for f in raw_dir.glob("*.json")}
+    seen = saved = skipped = ignored = deleted = failed = 0
+
+    for _ in range(max_batches):
+        resp = http.post(_queue_url(s, "pull"), headers=_queue_headers(s),
+                         json={"visibility_timeout_ms": 60000, "batch_size": 100})
+        resp.raise_for_status()
+        msgs = (resp.json().get("result") or {}).get("messages") or []
+        if not msgs:
+            break
+        acks = []
+        for m in msgs:
+            seen += 1
+            key = _msg_r2_key(m.get("body"))
+            try:
+                if not key:
+                    ignored += 1
+                    acks.append({"lease_id": m["lease_id"]})
+                    continue
+                body = r2.get_object(Bucket=bucket, Key=key)["Body"].read()
+                rec = parse_eml(body)
+                if rec is None:
+                    ignored += 1
+                else:
+                    rkey = _safe_key_for(rec)
+                    if rkey in existing:
+                        skipped += 1
+                    else:
+                        (raw_dir / f"{rkey}.json").write_text(json.dumps(rec, indent=2))
+                        existing.add(rkey)
+                        saved += 1
+                if delete:
+                    r2.delete_object(Bucket=bucket, Key=key)
+                    deleted += 1
+                acks.append({"lease_id": m["lease_id"]})  # ack only on success
+            except Exception as ex:  # leave un-acked → queue redelivers later
+                failed += 1
+                print(f"  ! queue message {m.get('lease_id')} failed: {ex}")
+        if acks:
+            http.post(_queue_url(s, "ack"), headers=_queue_headers(s),
+                      json={"acks": acks}).raise_for_status()
+
+    return {"messages_seen": seen, "saved": saved, "skipped_existing": skipped,
+            "ignored_non_receipt": ignored, "deleted": deleted, "failed": failed}
+
+
+def _safe_key_for(rec: dict) -> str:
+    from .fetch import _safe_key
+    return _safe_key(rec)

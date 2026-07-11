@@ -1,0 +1,20 @@
+# Email-ingestion poller — a small image (no Chromium/Playwright).
+# Pulls forwarded Publix receipts from the Cloudflare queue, ingests them, and
+# deletes on success. Shares the same data volume as the web app.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-poller.txt .
+RUN pip install --no-cache-dir -r requirements-poller.txt
+
+COPY publix_archiver ./publix_archiver
+
+# Receipts, outputs, and settings (incl. data/email_config.json) live here.
+VOLUME /app/data
+
+# Poll continuously; interval is PUBLIX_EMAIL_POLL_INTERVAL (default 300s).
+CMD ["python", "-m", "publix_archiver", "email-pull", "--loop"]

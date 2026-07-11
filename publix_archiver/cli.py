@@ -310,6 +310,59 @@ def cmd_backup_delete(args) -> None:
     print(json.dumps(backup.delete_backup(args.name), indent=2))
 
 
+def cmd_email_pull(args) -> None:
+    """Pull forwarded Publix receipt emails from the Cloudflare queue → data/raw."""
+    from . import email_ingest
+    from .parse import parse_all
+    from .markdown import generate_markdown
+    import time
+
+    interval = args.interval or config.EMAIL_POLL_INTERVAL
+    while True:
+        summary = email_ingest.pull_from_queue(delete=not args.keep)
+        if summary["saved"]:
+            parse_all()
+            generate_markdown()
+        print(json.dumps(summary))
+        if not args.loop:
+            break
+        time.sleep(interval)
+
+
+def cmd_import_eml(args) -> None:
+    """Ingest local Publix receipt .eml files (non-receipts are skipped)."""
+    from . import email_ingest
+    from .parse import parse_all
+    summary = email_ingest.ingest_eml_paths(args.paths)
+    if summary["saved"]:
+        parse_all()
+    print(json.dumps(summary, indent=2))
+
+
+def cmd_delete(args) -> None:
+    """Delete a single receipt (raw JSON + its PDF and Markdown page)."""
+    import re
+    rid = args.receipt_id
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", rid)
+    key = safe if (config.RAW_DIR / f"{safe}.json").exists() else None
+    if key is None:
+        for f in config.RAW_DIR.glob("*.json"):
+            try:
+                if str(json.loads(f.read_text()).get("ReceiptId") or "") == rid:
+                    key = f.stem
+                    break
+            except Exception:
+                continue
+    if key is None:
+        raise SystemExit(f"Receipt {rid} not found in {config.RAW_DIR}")
+    (config.RAW_DIR / f"{key}.json").unlink(missing_ok=True)
+    (config.PDF_DIR / f"{key}.pdf").unlink(missing_ok=True)
+    (config.OUTPUT_DIR / "receipts" / f"{key}.md").unlink(missing_ok=True)
+    from .parse import parse_all
+    parse_all()
+    print(json.dumps({"receipt": rid, "key": key, "deleted": True}, indent=2))
+
+
 def _prompt_new_password(username: str) -> str:
     import getpass
     while True:
@@ -524,6 +577,23 @@ def build_parser() -> argparse.ArgumentParser:
     b = bsub.add_parser("delete", help="delete a backup")
     b.add_argument("name", help="backup filename")
     b.set_defaults(func=cmd_backup_delete)
+
+    sp = sub.add_parser("email-pull",
+                        help="pull forwarded receipt emails from the Cloudflare queue")
+    sp.add_argument("--loop", action="store_true", help="poll continuously")
+    sp.add_argument("--interval", type=int, default=None,
+                    help="seconds between polls (default PUBLIX_EMAIL_POLL_INTERVAL / 300)")
+    sp.add_argument("--keep", action="store_true",
+                    help="don't delete R2 objects / ack messages after ingest")
+    sp.set_defaults(func=cmd_email_pull)
+
+    sp = sub.add_parser("import-eml", help="ingest local Publix receipt .eml files")
+    sp.add_argument("paths", nargs="+", help=".eml files or directories")
+    sp.set_defaults(func=cmd_import_eml)
+
+    sp = sub.add_parser("delete", help="delete a single receipt by ReceiptId")
+    sp.add_argument("receipt_id")
+    sp.set_defaults(func=cmd_delete)
 
     return p
 

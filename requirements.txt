@@ -2,6 +2,10 @@
 # rendering (pdf.py).
 playwright>=1.44
 
-# HTTP client for Publix's purchase-history REST API. The [http2] extra pulls in
-# `h2`, which is required because api.py creates the client with http2=True.
+# HTTP client for Publix's purchase-history REST API (and the Cloudflare Queue
+# pull API). The [http2] extra pulls in `h2`, required by api.py (http2=True).
 httpx[http2]>=0.27
+
+# S3-compatible client for Cloudflare R2 — only needed for email ingestion
+# (publix_archiver.email_ingest); imported lazily so the core runs without it.
+boto3>=1.34

@@ -59,9 +59,16 @@ reject everyone. See [Web login](#web-login-authentication--mfa).
 ### Docker
 
 ```bash
+cp .env.example .env                  # optional: set PORT and (for email) R2/Queue
 docker compose up --build             # http://localhost:8000
 PORT=9000 docker compose up --build   # or any port
 ```
+
+Two images are published to GHCR on merge (multi-arch, native runners): the web
+app `ghcr.io/brett6320/publix_receipt_archiver` and the slim email poller
+`ghcr.io/brett6320/publix_receipt_archiver/poller` (no Chromium). The
+`email-poller` compose service uses the pre-built poller image; see
+[Email ingestion](#email-ingestion-cloudflare).
 
 Create a login before you sign in (the container serves the same auth-gated UI):
 
@@ -153,6 +160,38 @@ python -m publix_archiver backup list
 python -m publix_archiver backup restore receipts-YYYYMMDD-HHMMSS.tar.gz
 python -m publix_archiver backup delete  receipts-YYYYMMDD-HHMMSS.tar.gz
 ```
+
+### Email ingestion (Cloudflare)
+
+Publix can email itemized e-receipts (enable it in Receipt Preferences). Forward
+them to a Cloudflare Email Routing address; an **Email Worker** keeps only genuine
+Publix receipts (works even though forwarding rewrites the sender), stores each
+raw `.eml` in **R2**, and enqueues a reference on a **Cloudflare Queue**. The
+archiver's poller pulls the queue, ingests, and **deletes on success**. Emailed
+receipts dedupe against API-fetched ones (same `ReceiptId`).
+
+Set it up once — see **[`cloudflare/README.md`](cloudflare/README.md)** for the
+full Cloudflare-side config (Email Routing, R2 bucket, Queue, API token). Then
+configure the archiver in the **admin UI** (Collect tab → *Email ingestion*) or
+via `PUBLIX_R2_*` / `PUBLIX_CF_*` env vars, and run the poller:
+
+```bash
+python -m publix_archiver email-pull --loop            # every 5 min (configurable)
+python -m publix_archiver email-pull --loop --interval 120
+python -m publix_archiver import-eml path/to/receipt.eml   # or ingest local .eml files
+```
+
+Or run the bundled poller container (pre-built slim image, no Chromium):
+`docker compose --profile email up -d email-poller` — set the R2/Queue values in
+`.env` (see `.env.example`) or the admin UI.
+Admins can also **Poll now** from the UI.
+
+### Admin actions
+
+Admin accounts can, from the web UI: run collections, manage **backups**,
+configure **email ingestion**, and **delete a receipt** (🗑 next to each receipt,
+with confirmation — removes its data, PDF, and Markdown). CLI:
+`python -m publix_archiver delete <ReceiptId>`.
 
 ## Usage
 

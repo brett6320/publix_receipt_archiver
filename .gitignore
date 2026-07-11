@@ -1,6 +1,14 @@
 # Playwright persistent browser profile (contains your logged-in session!)
 .publix_profile/
 
+# Sample receipt emails (real personal receipts — never commit)
+samples/
+
+# Cloudflare worker build/deps
+cloudflare/**/node_modules/
+cloudflare/**/.wrangler/
+cloudflare/**/dist/
+
 # All generated/downloaded data: raw receipts, parsed CSVs, PDFs, markdown,
 # captures, fetch summaries — and credentials.json / api_headers.json /
 # api_request.json. Never commit any of it.
