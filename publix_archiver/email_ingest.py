@@ -348,45 +348,24 @@ def _msg_r2_key(body) -> str | None:
     return None
 
 
-def pull_from_queue(raw_dir: Path = config.RAW_DIR, delete: bool = True,
-                    max_batches: int = 20, http=None, r2=None) -> dict:
-    """Pull queued R2 references, ingest each referenced .eml, delete the object
-    and ack the message. Retries (leaves un-acked) on transient errors so the
-    queue redelivers. Deduped by ReceiptId. Returns a run summary.
-
-    `http` (an httpx.Client) and `r2` (an S3 client) can be injected for tests.
-    """
+def _drain_bucket(r2, bucket: str, prefix: str, raw_dir: Path, existing: set,
+                  delete: bool) -> dict:
+    """Ingest and (optionally) delete EVERY object under the prefix in the
+    bucket. Deduped by ReceiptId. Returns per-object counters."""
     import json
-    s = config.email_settings()
-    bucket = s["r2_bucket"]
-    if http is None:
-        if not config.email_ingest_configured():
-            raise RuntimeError("Email ingestion is not configured "
-                               "(set R2 + Cloudflare Queue settings in the admin UI or env).")
-        import httpx
-        http = httpx.Client(timeout=30.0)
-    if r2 is None:
-        r2 = _r2_client(s)
-    config.ensure_dirs()
-    existing = {f.stem for f in raw_dir.glob("*.json")}
-    seen = saved = skipped = ignored = deleted = failed = 0
-
-    for _ in range(max_batches):
-        resp = http.post(_queue_url(s, "pull"), headers=_queue_headers(s),
-                         json={"visibility_timeout_ms": 60000, "batch_size": 100})
-        resp.raise_for_status()
-        msgs = (resp.json().get("result") or {}).get("messages") or []
-        if not msgs:
-            break
-        acks = []
-        for m in msgs:
-            seen += 1
-            key = _msg_r2_key(m.get("body"))
+    objects = saved = skipped = ignored = deleted = failed = 0
+    token = None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kw["ContinuationToken"] = token
+        lst = r2.list_objects_v2(**kw)
+        for obj in lst.get("Contents", []) or []:
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue
+            objects += 1
             try:
-                if not key:
-                    ignored += 1
-                    acks.append({"lease_id": m["lease_id"]})
-                    continue
                 body = r2.get_object(Bucket=bucket, Key=key)["Body"].read()
                 rec = parse_eml(body)
                 if rec is None:
@@ -402,16 +381,62 @@ def pull_from_queue(raw_dir: Path = config.RAW_DIR, delete: bool = True,
                 if delete:
                     r2.delete_object(Bucket=bucket, Key=key)
                     deleted += 1
-                acks.append({"lease_id": m["lease_id"]})  # ack only on success
-            except Exception as ex:  # leave un-acked → queue redelivers later
+            except Exception as ex:  # leave the object in place; retried next time
                 failed += 1
-                print(f"  ! queue message {m.get('lease_id')} failed: {ex}")
-        if acks:
-            http.post(_queue_url(s, "ack"), headers=_queue_headers(s),
-                      json={"acks": acks}).raise_for_status()
-
-    return {"messages_seen": seen, "saved": saved, "skipped_existing": skipped,
+                print(f"  ! object {key} failed: {ex}")
+        if not lst.get("IsTruncated"):
+            break
+        token = lst.get("NextContinuationToken")
+    return {"objects_seen": objects, "saved": saved, "skipped_existing": skipped,
             "ignored_non_receipt": ignored, "deleted": deleted, "failed": failed}
+
+
+def pull_from_queue(raw_dir: Path = config.RAW_DIR, delete: bool = True,
+                    max_batches: int = 20, http=None, r2=None) -> dict:
+    """On a queue event, drain the WHOLE R2 bucket — not just the object named in
+    the message. Pull messages as triggers, then list every object under the
+    prefix, ingest it, and delete it, and finally ack the messages. This way a
+    lost/duplicate message, multiple objects, or leftovers from a prior failure
+    are all swept up. Deduped by ReceiptId.
+
+    `http` (an httpx.Client) and `r2` (an S3 client) can be injected for tests.
+    """
+    s = config.email_settings()
+    bucket, prefix = s["r2_bucket"], s["r2_prefix"]
+    if http is None:
+        if not config.email_ingest_configured():
+            raise RuntimeError("Email ingestion is not configured "
+                               "(set R2 + Cloudflare Queue settings in the admin UI or env).")
+        import httpx
+        http = httpx.Client(timeout=30.0)
+    if r2 is None:
+        r2 = _r2_client(s)
+    config.ensure_dirs()
+    existing = {f.stem for f in raw_dir.glob("*.json")}
+
+    # 1) Pull messages — these are just wake-up triggers; the body is ignored.
+    leases = []
+    for _ in range(max_batches):
+        resp = http.post(_queue_url(s, "pull"), headers=_queue_headers(s),
+                         json={"visibility_timeout_ms": 60000, "batch_size": 100})
+        resp.raise_for_status()
+        msgs = (resp.json().get("result") or {}).get("messages") or []
+        if not msgs:
+            break
+        leases += [m["lease_id"] for m in msgs if m.get("lease_id")]
+
+    # 2) On any trigger, drain the whole bucket.
+    counts = {"objects_seen": 0, "saved": 0, "skipped_existing": 0,
+              "ignored_non_receipt": 0, "deleted": 0, "failed": 0}
+    if leases:
+        counts = _drain_bucket(r2, bucket, prefix, raw_dir, existing, delete)
+
+    # 3) Ack the triggers once drained (skip when --keep, so they redeliver).
+    if leases and delete:
+        http.post(_queue_url(s, "ack"), headers=_queue_headers(s),
+                  json={"acks": [{"lease_id": l} for l in leases]}).raise_for_status()
+
+    return {"messages_seen": len(leases), **counts}
 
 
 def _safe_key_for(rec: dict) -> str:
