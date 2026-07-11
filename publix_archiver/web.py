@@ -1204,6 +1204,25 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   </div>
 </div>
 
+<div id="imModal" class="modal hidden" onclick="if(event.target===this) closeItemMapModal()">
+  <div class="modalCard" style="max-width:460px">
+    <div class="modalHead"><b>Add item number</b><span class="modalX" title="Close" onclick="closeItemMapModal()">✕</span></div>
+    <p style="font-size:13px;color:var(--muted);margin:2px 0 12px">
+      Map this description to an item number. It's saved centrally and fills this
+      item on every receipt (matched by description) now and going forward.</p>
+    <label style="font-size:11px;color:var(--muted)">Description</label>
+    <div id="imModalDesc" style="font-weight:600;margin:2px 0 12px;word-break:break-word"></div>
+    <label style="font-size:11px;color:var(--muted)">Item number</label>
+    <input id="imModalNum" style="width:100%;box-sizing:border-box" placeholder="e.g. 12345"
+           onkeydown="if(event.key==='Enter') saveItemMapModal()">
+    <div class="inline" style="margin-top:14px;justify-content:flex-end">
+      <span class="msg" id="imModalMsg" style="margin-right:auto"></span>
+      <button class="btn secondary" onclick="closeItemMapModal()">Cancel</button>
+      <button class="btn" id="imModalSave" onclick="saveItemMapModal()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 // Any API 401 means the session lapsed — bounce to the login page.
@@ -1602,7 +1621,7 @@ inputs.forEach(k => { $(k).addEventListener("input", debounce(run,250)); $(k).ad
 $("group").addEventListener("change", ()=>{ sort = $("group").checked?"total_spent":"date"; run(); });
 $("collapseOrders").addEventListener("change", ()=> collapseAll($("collapseOrders").checked));
 $("discounted").addEventListener("change", run);
-document.addEventListener("keydown", e=>{ if(e.key==="Escape") closePriceModal(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closePriceModal(); closeItemMapModal(); } });
 $("reset").onclick = ()=>{ inputs.forEach(k=>$(k).value=""); $("group").checked=false;
   $("discounted").checked=false; $("collapseOrders").checked=false; collapsed.clear();
   sort="date"; order="desc"; run(); };
@@ -1711,8 +1730,31 @@ async function delItemMap(desc){
     if(r.ok){ loadItemMap(); run(); loadMeta(); }
   }catch(e){}
 }
+let _imModalDesc = "";
 function assignItemNumber(desc){
-  const n = prompt("Item number for:\n"+desc); if(n && n.trim()) addItemMap(desc, n.trim());
+  // Open an inline modal carrying the clicked item's name; the admin just types
+  // the number and saves — no tab switch.
+  _imModalDesc = desc;
+  $("imModalDesc").textContent = desc;
+  $("imModalNum").value = "";
+  $("imModalMsg").textContent = "";
+  $("imModal").classList.remove("hidden");
+  setTimeout(()=>$("imModalNum").focus(), 30);
+}
+function closeItemMapModal(){ $("imModal").classList.add("hidden"); }
+async function saveItemMapModal(){
+  const num = $("imModalNum").value.trim();
+  const msg = $("imModalMsg");
+  if(!num){ msg.textContent = "Enter an item number."; $("imModalNum").focus(); return; }
+  $("imModalSave").disabled = true; msg.textContent = "Saving…";
+  try{
+    const r = await api("/api/item-map",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({description:_imModalDesc, item_number:num})});
+    const j = await r.json();
+    if(r.ok){ closeItemMapModal(); loadItemMap(); run(); loadMeta(); }
+    else msg.textContent = j.error || "Failed";
+  }catch(e){ msg.textContent = "Failed."; }
+  finally{ $("imModalSave").disabled = false; }
 }
 async function deleteReceipt(rid){
   if(!confirm("Delete receipt "+rid+"?\nThis removes its data, PDF and Markdown. This cannot be undone.")) return;
