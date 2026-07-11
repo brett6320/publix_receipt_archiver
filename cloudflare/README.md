@@ -24,6 +24,10 @@ Publix receipt ──(you forward)──▶ you@your-domain (Cloudflare Email Ro
 ```bash
 wrangler r2 bucket create publix-receipts
 wrangler queues create publix-receipts
+
+# REQUIRED: enable HTTP pull on the queue so the archiver can pull messages.
+# Without this the pull endpoint returns 405 Method Not Allowed.
+wrangler queues consumer http add publix-receipts
 ```
 (Match these names in `email-worker/wrangler.toml`, or edit the toml.)
 
@@ -47,9 +51,11 @@ Non-Publix mail sent to that address is dropped by the Worker.
 
 ## 5. Create an API token for the archiver (pull consumer)
 Dashboard → My Profile → API Tokens → **Create Token** with:
-- **Account → Queues → Edit** (pull + ack messages), and
-- **Account → Workers R2 Storage → Edit** *(only if you use the token for R2;
-  the archiver uses R2 S3 credentials below instead)*.
+- **Account → Queues → Edit** — this grants `queues#read` + `queues#write`, both
+  required to pull and ack messages.
+
+(The queue must have the HTTP pull consumer enabled — see step 2 — or pulling
+returns **405 Method Not Allowed**.)
 
 Also create **R2 API credentials** (Access Key ID + Secret) for the S3 API:
 Dashboard → R2 → **Manage R2 API Tokens** → create an **S3** token scoped to the
