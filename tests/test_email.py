@@ -113,21 +113,36 @@ class _FakeHttp:
 
 class _FakeR2:
     def __init__(self, objects): self.objects = dict(objects); self.deleted = []
+    def list_objects_v2(self, Bucket, Prefix="", ContinuationToken=None):
+        return {"Contents": [{"Key": k} for k in self.objects
+                             if k.startswith(Prefix or "")], "IsTruncated": False}
     def get_object(self, Bucket, Key):
         return {"Body": type("B", (), {"read": lambda s, k=Key: self.objects[k]})()}
     def delete_object(self, Bucket, Key): self.deleted.append(Key); self.objects.pop(Key, None)
 
 
-def test_pull_from_queue_ingests_deletes_and_acks():
-    raw = _eml("Your Publix receipt.", _TEMPLATE_A)
+def test_pull_from_queue_drains_bucket_deletes_and_acks():
+    # One trigger message, but TWO objects in the bucket — both are ingested.
     http = _FakeHttp([{"lease_id": "L1", "body": {"key": "receipts/a.eml"}}])
-    r2 = _FakeR2({"receipts/a.eml": raw})
+    r2 = _FakeR2({"receipts/a.eml": _eml("Your Publix receipt.", _TEMPLATE_A),
+                  "receipts/b.eml": _eml("Your Publix receipt.", _TEMPLATE_B)})
     tmp = Path(tempfile.mkdtemp())
     summary = E.pull_from_queue(raw_dir=tmp, http=http, r2=r2)
-    assert summary["saved"] == 1 and summary["deleted"] == 1
-    assert r2.deleted == ["receipts/a.eml"]                 # object removed
-    assert http.acked == [{"lease_id": "L1"}]               # message acked
+    assert summary["messages_seen"] == 1
+    assert summary["saved"] == 2 and summary["deleted"] == 2   # whole bucket drained
+    assert set(r2.deleted) == {"receipts/a.eml", "receipts/b.eml"}
+    assert http.acked == [{"lease_id": "L1"}]                  # trigger acked
     assert (tmp / "9999A1B100200.json").exists()
+    assert (tmp / "9999X9X111222.json").exists()
+
+
+def test_pull_from_queue_no_trigger_no_drain():
+    # No messages -> don't touch the bucket at all.
+    http = _FakeHttp([])
+    r2 = _FakeR2({"receipts/a.eml": _eml("Your Publix receipt.", _TEMPLATE_A)})
+    summary = E.pull_from_queue(raw_dir=Path(tempfile.mkdtemp()), http=http, r2=r2)
+    assert summary["messages_seen"] == 0 and summary["objects_seen"] == 0
+    assert r2.deleted == [] and http.acked == []
 
 
 def test_email_settings_merge_and_secret_preserved():
