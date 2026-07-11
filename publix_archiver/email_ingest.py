@@ -46,6 +46,53 @@ def _num(v) -> float:
         return 0.0
 
 
+# ---- receipt-text sanitizing ----------------------------------------------
+# Some receipts (especially ones imported from a *forwarded* email before the
+# attachment handling was fixed) captured raw email transport headers, DKIM/auth
+# results, MIME encoded-words and base64 blobs into their ReceiptText. Strip that
+# cruft so the printed-receipt facsimile stays a clean receipt.
+_EMAIL_HEADER_RE = re.compile(
+    r"(?i)^\s*(authentication-results|arc-[\w-]+|dkim-signature|domainkey-signature|"
+    r"received|return-path|delivered-to|message-id|mime-version|reply-to|references|"
+    r"in-reply-to|precedence|auto-submitted|feedback-id|list-[\w-]+|subject|from|to|"
+    r"content-(?:type|transfer-encoding|disposition|id|language)|x-[\w-]+)\b\s*:")
+_AUTH_CONT_RE = re.compile(
+    r"(?i)^\s*(?:d?kim|spf|dmarc|arc)=|header\.[dib]=|smtp\.(?:mailfrom|remote-ip)")
+_ENCWORD_RE = re.compile(r"=\?[^?]*\?[bqBQ]\?[^?]*\?=")
+_B64_BLOB_RE = re.compile(r"^[A-Za-z0-9+/=_-]{40,}$")
+# The marketing e-mail footer that follows the printed receipt — not receipt
+# text. Everything from the first of these phrases onward is dropped. None occur
+# in a printed receipt, so we match anywhere (the footer often wraps mid-line).
+_FOOTER_RE = re.compile(
+    r"(?i)(please do not reply to this email|this email was sent to|"
+    r"unsubscribe from all|view this email in your browser|"
+    r"update your receipt preferences|view the publix super markets privacy)")
+_MAX_RECEIPT_TEXT = 12000  # backstop: no receipt facsimile should exceed this
+
+
+def strip_email_cruft(text: str) -> str:
+    """Clean receipt text for the printed-receipt facsimile: drop leaked email
+    headers / DKIM / encoded-words / base64 blobs, and cut the trailing marketing
+    footer. A no-op on already-clean receipts; keeps genuine receipt lines."""
+    text = text or ""
+    m = _FOOTER_RE.search(text)          # cut the marketing footer, if present
+    if m:
+        text = text[:m.start()]
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = _ENCWORD_RE.sub("", raw).rstrip()   # remove =?utf-8?q?…?= inline
+        s = line.strip()
+        if s and (_EMAIL_HEADER_RE.match(s) or _AUTH_CONT_RE.search(s)
+                  or _B64_BLOB_RE.match(s)
+                  or s.startswith("=?") or s.endswith("?=")):
+            continue                                # transport cruft — drop
+        out.append(line)
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    if len(cleaned) > _MAX_RECEIPT_TEXT:
+        cleaned = cleaned[:_MAX_RECEIPT_TEXT].rstrip() + "\n…(truncated)"
+    return cleaned
+
+
 # ---- email → text ---------------------------------------------------------
 
 def _html_to_text(html: str) -> str:
@@ -316,7 +363,7 @@ def parse_receipt_text(text: str) -> dict | None:
         "GrandTotal": grand,
         "OrderTotal": order_total,
         "TaxAmount": tax,
-        "ReceiptText": text,
+        "ReceiptText": strip_email_cruft(text),
         "Products": [],
         "ReceiptLineItems": items,
         "ItemCount": len(items),

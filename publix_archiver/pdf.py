@@ -128,8 +128,10 @@ def _receipt_html(r: dict) -> str:
     rid = str(r.get("ReceiptId") or "")
     rid_block = f"<div class='rid'>Receipt ID: {html.escape(rid)}</div>" if rid else ""
 
-    # Authentic printed-receipt facsimile.
-    rtext = _decode_receipt_text(str(r.get("ReceiptText") or ""))
+    # Authentic printed-receipt facsimile (scrubbed of any leaked email cruft so
+    # older imports don't render pages of headers/footer).
+    from .email_ingest import strip_email_cruft
+    rtext = strip_email_cruft(_decode_receipt_text(str(r.get("ReceiptText") or "")))
     facsimile = (f"<h2>Printed receipt</h2><pre class='facsimile'>{html.escape(rtext)}</pre>"
                  if rtext.strip() else "")
 

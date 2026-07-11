@@ -124,7 +124,8 @@ def _receipt_page(r: dict) -> str:
             lines.append(f"- {label}: {_money(t.get('TenderAmount'))}")
 
     # Legend for any per-line tax/benefit letters that appear in the printed text.
-    rtext = _decode_receipt_text(str(r.get("ReceiptText") or ""))
+    from .email_ingest import strip_email_cruft
+    rtext = strip_email_cruft(_decode_receipt_text(str(r.get("ReceiptText") or "")))
     codes = {}
     for c in ("t", "T", "M", "L", "F", "P", "H"):
         if re.search(rf"(?m)\s{c}\s*$", rtext):
