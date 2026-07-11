@@ -58,25 +58,71 @@ def _html_to_text(html: str) -> str:
     return "\n".join(ln for ln in lines if ln)
 
 
-def _receipt_text(msg: EmailMessage) -> str:
-    """Flatten the receipt text. Gathers every HTML (or plain) part — including
-    an original attached inside a forward (message/rfc822) — so the receipt is
-    found wherever it lives."""
+def _text_of(msg: EmailMessage) -> str:
+    """Flatten THIS message's own receipt text — without descending into an
+    attached email (message/rfc822). Attached emails are evaluated separately so
+    a forward carrying several receipts yields several receipts."""
     htmls: list[str] = []
     texts: list[str] = []
-    for part in msg.walk():
-        ct = part.get_content_type()
+
+    def walk(part) -> None:
+        if part.get_content_type() == "message/rfc822":
+            return  # an attached email — handled as its own candidate
+        if part.is_multipart():
+            for p in part.get_payload():
+                walk(p)
+            return
         payload = part.get_payload(decode=True)
         if not payload:
-            continue
+            return
         body = payload.decode(part.get_content_charset() or "utf-8", "replace")
+        ct = part.get_content_type()
         if ct == "text/html":
             htmls.append(body)
         elif ct == "text/plain":
             texts.append(body)
+
+    walk(msg)
     if htmls:
         return "\n".join(_html_to_text(h) for h in htmls)
     return "\n".join(texts)
+
+
+def _attached_email(part):
+    """If a part is an email attachment (message/rfc822, or a *.eml file), return
+    it parsed as a Message; else None. Non-email attachments (.asc/.zip/.exe/.jpg,
+    etc.) are ignored."""
+    ct = part.get_content_type()
+    if ct == "message/rfc822":
+        try:
+            payload = part.get_payload()
+            if isinstance(payload, list) and payload:
+                return payload[0]
+            if isinstance(payload, EmailMessage):
+                return payload
+        except Exception:
+            return None
+    fn = (part.get_filename() or "").lower()
+    if fn.endswith(".eml"):
+        try:
+            data = part.get_payload(decode=True)
+            if data:
+                return email.message_from_bytes(data, policy=policy.default)
+        except Exception:
+            return None
+    return None
+
+
+def _iter_candidate_emails(msg: EmailMessage):
+    """Yield this message plus every email attached to it (recursively) — each an
+    independent candidate. Non-email attachments are skipped."""
+    yield msg
+    for part in msg.walk():
+        if part is msg:
+            continue
+        sub = _attached_email(part)
+        if sub is not None:
+            yield from _iter_candidate_emails(sub)
 
 
 def is_publix_receipt(msg: EmailMessage) -> bool:
@@ -86,7 +132,7 @@ def is_publix_receipt(msg: EmailMessage) -> bool:
     Requires a Publix marker plus the two hard signals of a real receipt: a
     Receipt ID and a grand total.
     """
-    text = _receipt_text(msg)
+    text = _text_of(msg)
     haystack = "\n".join([str(msg.get("From", "")), str(msg.get("Subject", "")), text])
     has_publix = bool(re.search(r"publix", haystack, re.I))
     return bool(has_publix and _find_receipt_id(text) and _find_total(text) is not None)
@@ -277,19 +323,36 @@ def parse_receipt_text(text: str) -> dict | None:
     }
 
 
-def parse_eml(raw: bytes | str) -> dict | None:
-    """Parse a raw .eml into a record, or None if it isn't a Publix receipt."""
+def parse_receipts(raw: bytes | str) -> list[dict]:
+    """Every Publix receipt in a raw email: its own body if it's a receipt, plus
+    each attached email (.eml / message/rfc822), evaluated independently. Handles
+    forward-as-attachment and multiple attached receipts. Deduped by ReceiptId."""
     if isinstance(raw, bytes):
         msg = email.message_from_bytes(raw, policy=policy.default)
     else:
         msg = email.message_from_string(raw, policy=policy.default)
-    if not is_publix_receipt(msg):
-        return None
-    return parse_receipt_text(_receipt_text(msg))
+    out: list[dict] = []
+    seen: set[str] = set()
+    for cand in _iter_candidate_emails(msg):
+        if not is_publix_receipt(cand):
+            continue
+        rec = parse_receipt_text(_text_of(cand))
+        if rec and rec["ReceiptId"] not in seen:
+            seen.add(rec["ReceiptId"])
+            out.append(rec)
+    return out
+
+
+def parse_eml(raw: bytes | str) -> dict | None:
+    """Parse a raw .eml into a single record, or None. (First receipt found;
+    use parse_receipts() to get all of them.)"""
+    recs = parse_receipts(raw)
+    return recs[0] if recs else None
 
 
 def ingest_eml_paths(paths, raw_dir: Path = config.RAW_DIR) -> dict:
-    """Ingest .eml files/dirs. Non-receipt emails are skipped. Deduped by key."""
+    """Ingest .eml files/dirs. Every receipt in each file (including attached
+    emails) is saved; non-receipt attachments are ignored. Deduped by key."""
     import json
     from .fetch import _safe_key
     config.ensure_dirs()
@@ -303,17 +366,18 @@ def ingest_eml_paths(paths, raw_dir: Path = config.RAW_DIR) -> dict:
     existing = {f.stem for f in raw_dir.glob("*.json")}
     saved = skipped = ignored = 0
     for f in files:
-        rec = parse_eml(f.read_bytes())
-        if rec is None:
+        recs = parse_receipts(f.read_bytes())
+        if not recs:
             ignored += 1
             continue
-        key = _safe_key(rec)
-        if key in existing:
-            skipped += 1
-            continue
-        (raw_dir / f"{key}.json").write_text(json.dumps(rec, indent=2))
-        existing.add(key)
-        saved += 1
+        for rec in recs:
+            key = _safe_key(rec)
+            if key in existing:
+                skipped += 1
+                continue
+            (raw_dir / f"{key}.json").write_text(json.dumps(rec, indent=2))
+            existing.add(key)
+            saved += 1
     return {"files": len(files), "saved": saved,
             "skipped_existing": skipped, "ignored_non_receipt": ignored}
 
@@ -373,10 +437,10 @@ def _drain_bucket(r2, bucket: str, prefix: str, raw_dir: Path, existing: set,
             objects += 1
             try:
                 body = r2.get_object(Bucket=bucket, Key=key)["Body"].read()
-                rec = parse_eml(body)
-                if rec is None:
+                recs = parse_receipts(body)   # inline + each attached .eml
+                if not recs:
                     ignored += 1
-                else:
+                for rec in recs:
                     rkey = _safe_key_for(rec)
                     if rkey in existing:
                         skipped += 1

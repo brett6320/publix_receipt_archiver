@@ -11,12 +11,18 @@ const PUBLIX_RE = /publix/i;
 const RECEIPT_ID_RE = /(Receipt ID:|\b\d{4}(?:\s+[0-9A-Za-z]{3,4}){3,4}\b)/;
 const TOTAL_RE = /(Grand Total|(^|\n)\s*Total\s+\$?\d+\.\d{2})/i;
 
+// An email carried as an attachment (forward-as-attachment) — message/rfc822 or
+// a *.eml file. The archiver evaluates each attached email server-side.
+const EMAIL_ATTACHMENT_RE = /(Content-Type:\s*message\/rfc822|(?:file)?name="[^"]*\.eml")/i;
+
 // Basic filter: discard anything that isn't a Publix receipt. The archiver
 // re-validates and parses server-side, so this only needs to be a cheap gate.
 function looksLikePublixReceipt(subject, from, rawText) {
   if (!PUBLIX_RE.test(`${from}\n${subject}\n${rawText}`)) return false;
   if (/publix receipt/i.test(subject)) return true; // "Fwd: Your Publix receipt."
-  return RECEIPT_ID_RE.test(rawText) && TOTAL_RE.test(rawText);
+  // Inline receipt, or a Publix email forwarded as an attachment.
+  if (RECEIPT_ID_RE.test(rawText) && TOTAL_RE.test(rawText)) return true;
+  return EMAIL_ATTACHMENT_RE.test(rawText);
 }
 
 export default {
