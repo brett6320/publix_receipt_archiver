@@ -10,6 +10,28 @@ from publix_archiver import parse as P
 from publix_archiver import web
 
 
+def test_clean_desc_decodes_html_entities():
+    assert P._clean_desc("Hershey&#39;s Milk Chocolate&reg;") == "Hershey's Milk Chocolate®"
+    assert P._clean_desc("Ben &amp; Jerry&#39;s&trade;") == "Ben & Jerry's™"
+    assert P._clean_desc("  spaced   out  ") == "spaced out"
+
+
+def test_parse_decodes_entities_in_descriptions():
+    rec = {"ReceiptId": "ENT1", "Source": "publix", "FacilityId": 1, "FacilityName": "S",
+           "TransactionDate": "2026-07-02T10:00:00", "GrandTotal": 3.0, "TaxAmount": 0.0,
+           "Products": [{"ItemName": "Hershey&#39;s Bar&reg;", "UPC": "77260"}],
+           "ReceiptLineItems": [{"ItemCode": "0000077260", "ItemQty": 1, "ItemPrice": 3.0,
+                                 "ItemAmount": 3.0, "SavingAmount": 0.0, "NetAmount": 3.0}]}
+    tmp = Path(tempfile.mkdtemp()); raw, out = tmp / "raw", tmp / "out"
+    raw.mkdir(); out.mkdir()
+    (raw / "e.json").write_text(json.dumps(rec))
+    P.parse_all(raw_dir=raw, output_dir=out)
+    row = [r for r in csv.DictReader(open(out / "line_items.csv"))
+           if r["item_number"] == "77260"][0]
+    assert row["description"] == "Hershey's Bar®"
+    assert "&#39;" not in row["description"] and "&reg;" not in row["description"]
+
+
 def test_desc_score_prefers_fuller_name():
     full = "Jennie-O 99%/1% Fresh Ground Turkey Breast (16 oz (1 lb))"
     abbr = "J/O 99% Gr Turkey Breas"

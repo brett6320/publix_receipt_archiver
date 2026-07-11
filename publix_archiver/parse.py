@@ -13,6 +13,7 @@ ReceiptTenderLineItems[], totals, BarcodeSrc, ReceiptText). The `store`/
 from __future__ import annotations
 
 import csv
+import html
 import json
 import re
 from pathlib import Path
@@ -127,6 +128,12 @@ def _strip_upc(code) -> str:
     return s.lstrip("0") or s
 
 
+def _clean_desc(s) -> str:
+    """Decode HTML entities and tidy whitespace in a description. Publix's catalog
+    names arrive HTML-encoded (e.g. 'Hershey&#39;s' -> \"Hershey's\")."""
+    return re.sub(r"\s+", " ", html.unescape(str(s or ""))).strip()
+
+
 def _product_index(receipt: dict) -> dict[str, dict]:
     """Map normalized UPC -> product catalog entry (name, urls, image)."""
     idx: dict[str, dict] = {}
@@ -140,11 +147,11 @@ def _product_index(receipt: dict) -> dict[str, dict]:
 def product_description(prod: dict | None, fallback: str = "") -> str:
     """Best display name for a product: catalog name (+ size), else fallback."""
     if not prod:
-        return fallback
-    name = str(prod.get("ItemName") or "").strip()
-    size = str(prod.get("SizeDescription") or "").strip()
-    desc = str(prod.get("ItemDescription") or "").strip()
-    out = name or desc or fallback
+        return _clean_desc(fallback)
+    name = _clean_desc(prod.get("ItemName"))
+    size = _clean_desc(prod.get("SizeDescription"))
+    desc = _clean_desc(prod.get("ItemDescription"))
+    out = name or desc or _clean_desc(fallback)
     if size and size.lower() not in out.lower():
         out = f"{out} ({size})" if out else size
     return out.strip()
@@ -321,7 +328,7 @@ def _display_descriptions(line_items) -> dict[str, str]:
 
     def consider(num, desc) -> None:
         num = str(num or "").strip()
-        desc = str(desc or "").strip()
+        desc = _clean_desc(desc)
         if not num or not desc:
             return
         score = _desc_score(desc)
@@ -336,7 +343,12 @@ def _display_descriptions(line_items) -> dict[str, str]:
     from . import item_map
     for e in item_map.entries():
         consider(e.get("item_number"), e.get("description"))
-    return {num: v[1] for num, v in best.items()}
+    result = {num: v[1] for num, v in best.items()}
+    # An admin-set name wins over the automatic pick for that item number.
+    from . import item_names
+    for num, name in item_names.names().items():
+        result[num] = _clean_desc(name)
+    return result
 
 # Size/unit tokens ignored when matching descriptions across sources (a register
 # name like "AB MILK U ORG 96OZ" vs a catalog name), so quantities don't block a

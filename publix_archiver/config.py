@@ -34,6 +34,10 @@ CRED_CACHE_FILE = DATA_DIR / "credentials.json"
 # on receipts that don't carry them (e.g. email receipts). Central + persistent.
 ITEM_MAP_FILE = DATA_DIR / "item_number_map.json"
 
+# Admin-set display names per item number, overriding the auto-derived "most
+# complete" description used to unify an item's lines.
+ITEM_NAMES_FILE = DATA_DIR / "item_names.json"
+
 # Publix endpoints (undocumented; reverse-engineered from the site's own calls).
 # The purchase-history service is a REST API on services.publix.com; the account
 # pages that call it live on www.publix.com.
