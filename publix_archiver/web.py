@@ -345,6 +345,7 @@ def _search(rows: list[dict], q: dict) -> dict:
     order = (q.get("order", ["desc"])[0] or "desc")
     group = (q.get("group", ["0"])[0] == "1")
     discounted_only = (q.get("discounted", ["0"])[0] == "1")
+    missing_item = (q.get("no_item", ["0"])[0] == "1")
     # Items that carry an associated discount: (receipt_id, discounted item #).
     disc_items = set()
     if discounted_only:
@@ -376,6 +377,10 @@ def _search(rows: list[dict], q: dict) -> dict:
         # "Has discount": keep discount lines and the items they apply to.
         if discounted_only and str(r.get("order_type", "")) != "discount" \
                 and (r.get("receipt_id", ""), str(r.get("item_number", ""))) not in disc_items:
+            return False
+        # "Missing item #": product lines with no item number (e.g. email receipts).
+        if missing_item and (str(r.get("item_number", "")).strip()
+                             or str(r.get("order_type", "")) == "discount"):
             return False
         amt = r.get("amount", 0.0)
         if min_price is not None and amt < min_price:
@@ -1182,6 +1187,7 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
         <span class="stat">Discounts: <b id="discounts">$0.00</b></span>
         <label class="toggle"><input type="checkbox" id="group"> Group by item #</label>
         <label class="toggle" title="Only items that have an associated discount"><input type="checkbox" id="discounted"> Has discount</label>
+        <label class="toggle" title="Only items with no item number (e.g. email receipts)"><input type="checkbox" id="no_item"> Missing item #</label>
         <label class="toggle"><input type="checkbox" id="collapseOrders"> Collapse orders</label>
         <span style="flex:1"></span>
         <button class="btn secondary" onclick="exportExcel()" title="Download the current view as a spreadsheet (CSV, opens in Excel)">⬇ Export</button>
@@ -1472,6 +1478,7 @@ function qs(){
   inputs.forEach(k => { if($(k).value) p.set(k, $(k).value); });
   if($("group").checked) p.set("group","1");
   if($("discounted").checked) p.set("discounted","1");
+  if($("no_item").checked) p.set("no_item","1");
   p.set("sort", sort); p.set("order", order);
   return p.toString();
 }
@@ -1621,9 +1628,10 @@ inputs.forEach(k => { $(k).addEventListener("input", debounce(run,250)); $(k).ad
 $("group").addEventListener("change", ()=>{ sort = $("group").checked?"total_spent":"date"; run(); });
 $("collapseOrders").addEventListener("change", ()=> collapseAll($("collapseOrders").checked));
 $("discounted").addEventListener("change", run);
+$("no_item").addEventListener("change", run);
 document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closePriceModal(); closeItemMapModal(); } });
 $("reset").onclick = ()=>{ inputs.forEach(k=>$(k).value=""); $("group").checked=false;
-  $("discounted").checked=false; $("collapseOrders").checked=false; collapsed.clear();
+  $("discounted").checked=false; $("no_item").checked=false; $("collapseOrders").checked=false; collapsed.clear();
   sort="date"; order="desc"; run(); };
 
 // ---------- Export current view to a spreadsheet (CSV, opens in Excel) ----------

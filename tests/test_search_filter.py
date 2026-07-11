@@ -24,6 +24,20 @@ def _descs(code):
     return sorted(r["description"] for r in res["rows"])
 
 
+def test_filter_missing_item_number():
+    common = {"date": "2020-01-15", "store": "S", "store_number": "9", "receipt_id": "R1",
+              "amount": 1.0, "unit_qty": 1, "unit_price": 1.0, "tax_exempt": "",
+              "discount_ref": "", "doc_type": "in-store", "department": "",
+              "source": "publix", "tax_flag": ""}
+    rows = [
+        {**common, "description": "Numbered", "item_number": "4799", "order_type": "store"},
+        {**common, "description": "Email item", "item_number": "", "order_type": "store"},
+        {**common, "description": "Savings", "item_number": "", "order_type": "discount"},
+    ]
+    res = web._search(rows, {"no_item": ["1"]})
+    assert [r["description"] for r in res["rows"]] == ["Email item"]  # not the numbered or discount row
+
+
 def test_filter_by_code():
     assert _descs("F") == ["Bananas"]
     assert _descs("t") == ["Bread"]                 # lowercase != uppercase
