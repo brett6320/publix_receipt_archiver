@@ -83,6 +83,53 @@ def test_forwarded_receipt_is_still_parsed():
     assert rec and rec["ReceiptId"] == "9999A1B100200"
 
 
+def _inner_receipt(html=None):
+    m = EmailMessage()
+    m["From"] = "Publix Super Markets <no-reply@exact.publix.com>"
+    m["Subject"] = "Your Publix receipt."
+    m.set_content("(see html)")
+    m.add_alternative(html or _TEMPLATE_A, subtype="html")
+    return m
+
+
+def _fwd_outer(subject="Fwd (as attachment)"):
+    m = EmailMessage()
+    m["From"], m["To"], m["Subject"] = "Me <me@example.com>", "receipts@x", subject
+    m.set_content("See attached.")
+    return m
+
+
+def test_forward_as_message_rfc822_attachment():
+    o = _fwd_outer()
+    o.add_attachment(_inner_receipt(), filename="receipt.eml")   # message/rfc822
+    recs = E.parse_receipts(o.as_bytes())
+    assert [r["ReceiptId"] for r in recs] == ["9999A1B100200"]
+
+
+def test_forward_as_eml_file_attachment():
+    o = _fwd_outer()
+    o.add_attachment(_inner_receipt().as_bytes(), maintype="application",
+                     subtype="octet-stream", filename="receipt.eml")
+    assert [r["ReceiptId"] for r in E.parse_receipts(o.as_bytes())] == ["9999A1B100200"]
+
+
+def test_multiple_eml_attachments_and_non_email_ignored():
+    o = _fwd_outer("two receipts + junk")
+    o.add_attachment(_inner_receipt(_TEMPLATE_A), filename="a.eml")
+    o.add_attachment(_inner_receipt(_TEMPLATE_B), filename="b.eml")
+    o.add_attachment(b"\xff\xd8JPEG", maintype="image", subtype="jpeg", filename="pic.jpg")
+    o.add_attachment(b"PKzip", maintype="application", subtype="zip", filename="x.zip")
+    ids = sorted(r["ReceiptId"] for r in E.parse_receipts(o.as_bytes()))
+    assert ids == ["9999A1B100200", "9999X9X111222"]   # both receipts; jpg/zip ignored
+
+
+def test_only_non_email_attachment_yields_nothing():
+    o = _fwd_outer("no receipt here")
+    o.add_attachment(b"-----BEGIN PGP-----", maintype="application",
+                     subtype="pgp-signature", filename="sig.asc")
+    assert E.parse_receipts(o.as_bytes()) == []
+
+
 def test_non_receipt_ignored():
     ad = "<div>Publix Super Markets weekly ad — great deals this week! Save big.</div>"
     assert E.parse_eml(_eml("Weekly savings", ad)) is None
