@@ -450,6 +450,17 @@ class _Handler(BaseHTTPRequestHandler):
     def _current_user(self) -> str | None:
         return webauth.session_user(self._session_token())
 
+    def _is_admin(self) -> bool:
+        user = self._current_user()
+        return bool(user) and webauth.is_admin(user)
+
+    def _require_admin(self) -> bool:
+        """Send 403 and return False if the caller isn't an admin."""
+        if self._is_admin():
+            return True
+        self._send(403, b'{"error":"admin role required"}')
+        return False
+
     def _cookie_header(self, token: str, *, expire: bool = False) -> tuple[str, str]:
         attrs = [f"{_COOKIE}={token}", "Path=/", "HttpOnly", "SameSite=Lax"]
         if config.COOKIE_SECURE:
@@ -469,6 +480,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _auth_status(self) -> bytes:
         return json.dumps({"authenticated": bool(self._current_user()),
                            "user": self._current_user() or "",
+                           "is_admin": self._is_admin(),
                            "users_exist": webauth.users_exist()}).encode()
 
     def do_GET(self):
@@ -519,6 +531,33 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"reloaded": len(self.rows)}).encode())
         elif path == "/api/collect/status":
             self._send(200, json.dumps(_job_snapshot()).encode())
+        elif path == "/api/backups":
+            if not self._require_admin():
+                return
+            from . import backup
+            self._send(200, json.dumps({"backups": backup.list_backups()}).encode())
+        elif path.startswith("/api/backups/download/"):
+            if not self._require_admin():
+                return
+            from . import backup
+            from urllib.parse import unquote
+            name = unquote(path[len("/api/backups/download/"):])
+            try:
+                p = backup._safe_path(name)
+            except ValueError:
+                self._send(400, b'{"error":"invalid name"}')
+                return
+            if p.exists() and p.name.endswith(".tar.gz"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="{p.name}"')
+                data = p.read_bytes()
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self._send(404, b'{"error":"backup not found"}')
         elif path.startswith("/pdf/"):
             from urllib.parse import unquote
             name = unquote(path[len("/pdf/"):])
@@ -618,6 +657,43 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 result = _refresh_one(rid, bool(body.get("render_pdf", True)))
                 self._send(200 if result.get("ok") else 404, json.dumps(result).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/backups/create":
+            if not self._require_admin():
+                return
+            from . import backup
+            try:
+                self._send(200, json.dumps(backup.create_backup()).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/backups/restore":
+            if not self._require_admin():
+                return
+            from . import backup
+            name = str(self._read_json().get("name", "")).strip()
+            try:
+                result = backup.restore_backup(name)
+                # Rebuild search data so restored receipts show immediately.
+                if result.get("added"):
+                    from .parse import parse_all
+                    parse_all()
+                    _Handler.rows = _load_rows()
+                    result["line_items"] = len(_Handler.rows)
+                self._send(200, json.dumps(result).encode())
+            except (FileNotFoundError, ValueError):
+                self._send(404, json.dumps({"error": "backup not found"}).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/backups/delete":
+            if not self._require_admin():
+                return
+            from . import backup
+            name = str(self._read_json().get("name", "")).strip()
+            try:
+                self._send(200, json.dumps(backup.delete_backup(name)).encode())
+            except (FileNotFoundError, ValueError):
+                self._send(404, json.dumps({"error": "backup not found"}).encode())
             except Exception as ex:
                 self._send(500, json.dumps({"error": str(ex)}).encode())
         else:
@@ -918,6 +994,19 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
         <button class="btn secondary" id="reprocessBtn" onclick="reprocess()">Refresh metadata</button>
         <span class="msg" id="reprocessMsg"></span>
       </div>
+    </div>
+
+    <div class="card admin-only hidden" id="backupCard">
+      <h2>4 · Backups <span style="font-size:12px;color:var(--muted)">(admin)</span></h2>
+      <p style="font-size:13px;color:var(--muted);margin:0 0 10px">
+        Compressed snapshots of your imported receipts (<code>data/raw</code>).
+        Restoring is additive — receipts already on disk are skipped, so it never
+        creates duplicates.</p>
+      <div class="inline">
+        <button class="btn" id="backupBtn" onclick="createBackup()">Create backup</button>
+        <span class="msg" id="backupMsg"></span>
+      </div>
+      <div id="backupList" style="margin-top:12px;font-size:13px"></div>
     </div>
   </div>
 
@@ -1418,7 +1507,54 @@ async function loadWhoami(){
   try{
     const s = await (await fetch("/api/auth/status")).json();
     const el = $("whoami"); if(el) el.textContent = s.user || "";
+    document.querySelectorAll('.admin-only').forEach(e=>e.classList.toggle('hidden', !s.is_admin));
+    if(s.is_admin) loadBackups();
   }catch(e){}
+}
+function fmtBytes(n){ n=Number(n)||0; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
+async function loadBackups(){
+  const box = $("backupList"); if(!box) return;
+  try{
+    const r = await (await api("/api/backups")).json();
+    const list = r.backups || [];
+    if(!list.length){ box.innerHTML = '<span style="color:var(--muted)">No backups yet.</span>'; return; }
+    box.innerHTML = '<table style="width:100%;border-collapse:collapse">' + list.map(b=>
+      `<tr><td style="padding:4px 6px">${b.name}</td>`+
+      `<td style="padding:4px 6px;color:var(--muted)">${b.receipts} receipts · ${fmtBytes(b.size)} · ${b.created}</td>`+
+      `<td style="padding:4px 6px;text-align:right;white-space:nowrap">`+
+      `<a class="pdf" href="/api/backups/download/${encodeURIComponent(b.name)}">Download</a>`+
+      ` &nbsp; <a class="pdf" href="#" onclick="restoreBackup('${b.name}');return false">Restore</a>`+
+      ` &nbsp; <a class="pdf" href="#" style="color:#c0392b" onclick="deleteBackup('${b.name}');return false">Delete</a>`+
+      `</td></tr>`).join('') + '</table>';
+  }catch(e){ box.textContent = 'Failed to load backups.'; }
+}
+async function createBackup(){
+  const msg=$("backupMsg"); msg.textContent='Creating…';
+  try{
+    const r = await api("/api/backups/create",{method:"POST"}); const j = await r.json();
+    msg.textContent = r.ok ? `Created ${j.name} (${j.receipts} receipts)` : (j.error||'Failed');
+    loadBackups();
+  }catch(e){ msg.textContent='Failed.'; }
+}
+async function restoreBackup(name){
+  if(!confirm('Restore '+name+'?\nReceipts already on disk are skipped — no duplicates.')) return;
+  const msg=$("backupMsg"); msg.textContent='Restoring…';
+  try{
+    const r = await api("/api/backups/restore",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    const j = await r.json();
+    msg.textContent = r.ok ? `Restored: ${j.added} added, ${j.skipped_existing} already present` : (j.error||'Failed');
+    if(r.ok && j.added){ run(); loadMeta(); }
+  }catch(e){ msg.textContent='Failed.'; }
+}
+async function deleteBackup(name){
+  if(!confirm('Delete '+name+'? This cannot be undone.')) return;
+  const msg=$("backupMsg"); msg.textContent='Deleting…';
+  try{
+    const r = await api("/api/backups/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    const j = await r.json();
+    msg.textContent = r.ok ? `Deleted ${name}` : (j.error||'Failed');
+    loadBackups();
+  }catch(e){ msg.textContent='Failed.'; }
 }
 // If a collection is already running when the page loads, resume showing status.
 (async ()=>{

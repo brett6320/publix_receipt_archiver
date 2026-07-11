@@ -279,6 +279,37 @@ def cmd_refresh(args) -> None:
     print(json.dumps({"receipt": rid, "key": key, "markdown": md, "pdf": pdf}, indent=2))
 
 
+def cmd_backup_create(args) -> None:
+    """Create a compressed backup of all raw receipts."""
+    from . import backup
+    print(json.dumps(backup.create_backup(), indent=2))
+
+
+def cmd_backup_list(args) -> None:
+    """List existing backups."""
+    from . import backup
+    print(json.dumps(backup.list_backups(), indent=2))
+
+
+def cmd_backup_restore(args) -> None:
+    """Restore a backup, skipping receipts already on disk, then rebuild outputs."""
+    from . import backup
+    result = backup.restore_backup(args.name, overwrite=args.overwrite)
+    if not args.no_parse and result["added"]:
+        from .parse import parse_all
+        from .markdown import generate_markdown
+        parse_all()
+        generate_markdown()
+        result["reprocessed"] = True
+    print(json.dumps(result, indent=2))
+
+
+def cmd_backup_delete(args) -> None:
+    """Delete a backup."""
+    from . import backup
+    print(json.dumps(backup.delete_backup(args.name), indent=2))
+
+
 def _prompt_new_password(username: str) -> str:
     import getpass
     while True:
@@ -476,6 +507,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--all", dest="skip_existing", action="store_false")
     sp.add_argument("--skip-pdf", action="store_true")
     sp.set_defaults(func=cmd_all, skip_existing=True)
+
+    sp = sub.add_parser("backup", help="create/restore compressed backups of data/raw")
+    bsub = sp.add_subparsers(dest="backup_command", required=True)
+    b = bsub.add_parser("create", help="create a compressed backup of all raw receipts")
+    b.set_defaults(func=cmd_backup_create)
+    b = bsub.add_parser("list", help="list existing backups")
+    b.set_defaults(func=cmd_backup_list)
+    b = bsub.add_parser("restore", help="restore a backup (skips receipts already on disk)")
+    b.add_argument("name", help="backup filename (see `backup list`)")
+    b.add_argument("--overwrite", action="store_true",
+                   help="overwrite receipts already on disk instead of skipping")
+    b.add_argument("--no-parse", action="store_true",
+                   help="don't rebuild CSVs/Markdown after restoring")
+    b.set_defaults(func=cmd_backup_restore)
+    b = bsub.add_parser("delete", help="delete a backup")
+    b.add_argument("name", help="backup filename")
+    b.set_defaults(func=cmd_backup_delete)
 
     return p
 
