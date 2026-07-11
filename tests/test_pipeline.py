@@ -56,10 +56,9 @@ def run(tmp: Path):
     assert rec[0]["store"] == "Sample Plaza", rec[0]
     assert int(rec[0]["items"]) == 2, rec[0]
 
-    # Non-discount line amounts should sum to the OrderTotal (4.17, tax 0).
-    prod_rows = [r for r in li if r["order_type"] != "discount"]
-    subtotal = round(sum(float(r["amount"]) for r in prod_rows), 2)
-    assert subtotal == 4.17, subtotal
+    # All line amounts (printed items minus discount rows) net to the total.
+    net = round(sum(float(r["amount"]) for r in li), 2)
+    assert net == 4.17, net
 
     print("\nALL PIPELINE ASSERTIONS PASSED")
 
