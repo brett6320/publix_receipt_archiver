@@ -600,6 +600,17 @@ class _Handler(BaseHTTPRequestHandler):
             q = (parse_qs(parsed.query).get("q", [""])[0] or "")
             self._send(200, json.dumps(
                 {"suggestions": _item_suggestions(self.rows, q)}).encode())
+        elif path == "/api/catalog-suggest":
+            if not self._require_admin():
+                return
+            q = (parse_qs(parsed.query).get("q", [""])[0] or "")
+            from . import catalog
+            try:
+                sugg = catalog.search_products(q)
+            except Exception:
+                sugg = []
+            self._send(200, json.dumps(
+                {"suggestions": sugg, "available": catalog.available()}).encode())
         elif path.startswith("/api/backups/download/"):
             if not self._require_admin():
                 return
@@ -1257,13 +1268,15 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     <input id="imModalNum" style="width:100%;box-sizing:border-box" placeholder="enter directly, or pick a suggestion below"
            onkeydown="if(event.key==='Enter') saveItemMapModal()">
     <div style="margin-top:12px">
-      <label style="font-size:11px;color:var(--muted)">Search suggestions (from items you already have)</label>
+      <label style="font-size:11px;color:var(--muted)">Find a number by name</label>
       <div class="inline" style="gap:8px;margin-top:3px">
         <input id="imSearchQ" style="flex:1;min-width:0" placeholder="search term"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();searchItemSuggest();}">
-        <button class="btn secondary" onclick="searchItemSuggest()">Search</button>
+               onkeydown="if(event.key==='Enter'){event.preventDefault();searchItemSuggest();searchCatalog();}">
+        <button class="btn secondary" onclick="searchItemSuggest()">My items</button>
+        <button class="btn secondary" onclick="searchCatalog()">Publix catalog</button>
       </div>
-      <div id="imSuggest" style="margin-top:8px;font-size:13px;max-height:180px;overflow:auto"></div>
+      <div id="imSuggest" style="margin-top:8px;font-size:13px;max-height:150px;overflow:auto"></div>
+      <div id="imCatalog" style="margin-top:4px;font-size:13px;max-height:150px;overflow:auto"></div>
     </div>
     <div class="inline" style="margin-top:14px;justify-content:flex-end">
       <span class="msg" id="imModalMsg" style="margin-right:auto"></span>
@@ -1794,9 +1807,15 @@ function assignItemNumber(descEnc){
   $("imModalMsg").textContent = "";
   $("imSearchQ").value = desc;
   $("imSuggest").innerHTML = "";
+  $("imCatalog").innerHTML = "";
   $("imModal").classList.remove("hidden");
   setTimeout(()=>$("imModalNum").focus(), 30);
   searchItemSuggest();   // auto-suggest from what we already have
+}
+function _suggRows(s){
+  return s.map(x=>
+    `<div class="suggrow" title="Use ${esc(x.item_number)}" onclick="pickSuggest('${esc(x.item_number)}')">`+
+    `<b>${esc(x.item_number)}</b> <span style="color:var(--muted)">${esc(x.description)}</span></div>`).join('');
 }
 async function searchItemSuggest(){
   const q = $("imSearchQ").value.trim();
@@ -1806,11 +1825,25 @@ async function searchItemSuggest(){
   try{
     const j = await (await api("/api/item-suggest?q="+encodeURIComponent(q))).json();
     const s = j.suggestions||[];
-    box.innerHTML = s.length ? s.map(x=>
-      `<div class="suggrow" title="Use ${esc(x.item_number)}" onclick="pickSuggest('${esc(x.item_number)}')">`+
-      `<b>${esc(x.item_number)}</b> <span style="color:var(--muted)">${esc(x.description)}</span></div>`).join('')
-      : '<span style="color:var(--muted)">No matches among your items — enter the number directly.</span>';
+    box.innerHTML = s.length
+      ? '<div style="color:var(--muted);margin:2px 0">Your items</div>'+_suggRows(s)
+      : '<span style="color:var(--muted)">No matches among your items — try the Publix catalog or enter the number directly.</span>';
   }catch(e){ box.innerHTML='<span style="color:var(--muted)">Search failed.</span>'; }
+}
+async function searchCatalog(){
+  const q = $("imSearchQ").value.trim();
+  const box = $("imCatalog");
+  if(!q){ box.innerHTML=""; return; }
+  box.innerHTML = '<span style="color:var(--muted)">Searching Publix catalog…</span>';
+  try{
+    const j = await (await api("/api/catalog-suggest?q="+encodeURIComponent(q))).json();
+    const s = j.suggestions||[];
+    box.innerHTML = s.length
+      ? '<div style="color:var(--muted);margin:2px 0">Publix catalog</div>'+_suggRows(s)
+      : (j.available
+          ? '<span style="color:var(--muted)">No catalog matches.</span>'
+          : '<span style="color:var(--muted)">Publix catalog unavailable — refresh the API session (Collect / login) to enable.</span>');
+  }catch(e){ box.innerHTML='<span style="color:var(--muted)">Catalog search failed.</span>'; }
 }
 function pickSuggest(num){ $("imModalNum").value = num; $("imModalNum").focus(); $("imModalMsg").textContent="Picked "+num+" — review and Save."; }
 function closeItemMapModal(){ $("imModal").classList.add("hidden"); }
