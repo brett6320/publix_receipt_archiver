@@ -557,6 +557,11 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._require_admin():
                 return
             self._send(200, json.dumps(_email_config_view()).encode())
+        elif path == "/api/item-map":
+            if not self._require_admin():
+                return
+            from . import item_map
+            self._send(200, json.dumps({"entries": item_map.entries()}).encode())
         elif path.startswith("/api/backups/download/"):
             if not self._require_admin():
                 return
@@ -723,6 +728,29 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 config.save_email_settings(self._read_json() or {})
                 self._send(200, json.dumps({"ok": True, "config": _email_config_view()}).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path in ("/api/item-map", "/api/item-map/delete"):
+            if not self._require_admin():
+                return
+            from . import item_map
+            body = self._read_json()
+            try:
+                if path.endswith("/delete"):
+                    item_map.remove(body.get("description", ""))
+                    result = {"ok": True}
+                else:
+                    result = {"ok": True, "added": item_map.add(
+                        body.get("description", ""), body.get("item_number", ""))}
+                # Apply the map now: backfill raw records + reparse + reload search.
+                from .parse import backfill_item_numbers, parse_all
+                result["filled"] = backfill_item_numbers(config.RAW_DIR).get("filled", 0)
+                parse_all()
+                _Handler.rows = _load_rows()
+                result["entries"] = item_map.entries()
+                self._send(200, json.dumps(result).encode())
+            except ValueError as ex:
+                self._send(400, json.dumps({"error": str(ex)}).encode())
             except Exception as ex:
                 self._send(500, json.dumps({"error": str(ex)}).encode())
         elif path == "/api/email/pull":
@@ -1101,6 +1129,21 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
         <span class="msg" id="emailMsg"></span>
       </div>
     </div>
+
+    <div class="card admin-only hidden" id="itemMapCard">
+      <h2>6 · Item number map <span style="font-size:12px;color:var(--muted)">(admin)</span></h2>
+      <p style="font-size:13px;color:var(--muted);margin:0 0 10px">
+        Central description → item-number mappings. Email receipts don't carry
+        item numbers; these fill them in (matched by description, ignoring word
+        order and sizes) on every refresh. Real receipt data always wins.</p>
+      <div class="inline">
+        <input id="im_desc" placeholder="description (e.g. AB MILK U ORG 96OZ)" style="min-width:260px">
+        <input id="im_num" placeholder="item number" style="width:120px">
+        <button class="btn" id="imAddBtn" onclick="addItemMap()">Add mapping</button>
+        <span class="msg" id="itemMapMsg"></span>
+      </div>
+      <div id="itemMapList" style="margin-top:12px;font-size:13px"></div>
+    </div>
   </div>
 
   <!-- ============ SEARCH ============ -->
@@ -1456,6 +1499,9 @@ async function run(){
       // Discount lines carry a code, not a product #: show it plain (no lookup).
       v = isChild(r.order_type) ? num2
         : (itemLink(num2) + " " + fltBtns('item', num2, 'item '+num2)); }
+    else if(k==="item_number" && !v && window.IS_ADMIN && !isChild(r.order_type) && r.description){
+      // No number (e.g. email receipt) — let admins add a central mapping.
+      v = `<span class="rowdel" style="color:var(--muted)" title="Add item number for this description" onclick="assignItemNumber(${JSON.stringify(String(r.description))})">＋#</span>`; }
     else if(k==="description" && v){ const d = String(v);
       const te = (r.tax_exempt==="Y") ? `<span class="tebadge" title="Tax-exempt (E)">E</span>` : "";
       const child = isChild(r.order_type);
@@ -1603,7 +1649,7 @@ async function loadWhoami(){
     const el = $("whoami"); if(el) el.textContent = s.user || "";
     document.querySelectorAll('.admin-only').forEach(e=>e.classList.toggle('hidden', !s.is_admin));
     window.IS_ADMIN = !!s.is_admin;
-    if(s.is_admin){ loadBackups(); loadEmailConfig(); }
+    if(s.is_admin){ loadBackups(); loadEmailConfig(); loadItemMap(); }
   }catch(e){}
 }
 const _ECFG = ["r2_account_id","r2_endpoint","r2_bucket","r2_prefix","r2_access_key_id",
@@ -1636,6 +1682,37 @@ async function pollEmail(){
     m.textContent = r.ok ? `Pulled: ${j.saved} new, ${j.skipped_existing} dup, ${j.ignored_non_receipt} ignored, ${j.deleted} removed` : (j.error||"Failed");
     if(r.ok && j.saved){ run(); loadMeta(); }
   }catch(e){ m.textContent="Failed."; }
+}
+async function loadItemMap(){
+  const box=$("itemMapList"); if(!box) return;
+  try{
+    const j=await (await api("/api/item-map")).json();
+    const list=j.entries||[];
+    box.innerHTML = list.length ? '<table style="width:100%;border-collapse:collapse">' + list.map(e=>
+      `<tr><td style="padding:3px 6px"><b>${(e.item_number||'')}</b></td>`+
+      `<td style="padding:3px 6px">${(e.description||'')}</td>`+
+      `<td style="padding:3px 6px;text-align:right"><a class="pdf" href="#" style="color:#c0392b" onclick="delItemMap(${JSON.stringify(e.description||'')});return false">Remove</a></td></tr>`
+    ).join('')+'</table>' : '<span style="color:var(--muted)">No mappings yet.</span>';
+  }catch(e){ box.textContent='Failed to load.'; }
+}
+async function addItemMap(desc, num){
+  const d = desc!=null?desc:$("im_desc").value, n = num!=null?num:$("im_num").value;
+  const m=$("itemMapMsg"); if(m) m.textContent="Saving…";
+  try{
+    const r=await api("/api/item-map",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({description:d,item_number:n})});
+    const j=await r.json();
+    if(r.ok){ if(m) m.textContent=`Added (filled ${j.filled} line(s)).`; if($("im_desc"))$("im_desc").value=""; if($("im_num"))$("im_num").value=""; loadItemMap(); run(); loadMeta(); }
+    else if(m) m.textContent=j.error||"Failed";
+  }catch(e){ if(m) m.textContent="Failed."; }
+}
+async function delItemMap(desc){
+  try{
+    const r=await api("/api/item-map/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({description:desc})});
+    if(r.ok){ loadItemMap(); run(); loadMeta(); }
+  }catch(e){}
+}
+function assignItemNumber(desc){
+  const n = prompt("Item number for:\n"+desc); if(n && n.trim()) addItemMap(desc, n.trim());
 }
 async function deleteReceipt(rid){
   if(!confirm("Delete receipt "+rid+"?\nThis removes its data, PDF and Markdown. This cannot be undone.")) return;

@@ -325,12 +325,14 @@ def _norm_desc(desc) -> str | None:
     return " ".join(sorted(keep))
 
 
-def build_number_index(line_items) -> dict[str, str]:
-    """Map normalized description -> item_number from lines that HAVE a number.
+def build_number_index(line_items, include_manual: bool = True) -> dict[str, str]:
+    """Map normalized description -> item_number.
 
-    Ambiguous keys (one description → multiple different numbers) are dropped so
-    we never guess."""
-    m: dict[str, str] = {}
+    Built from lines that HAVE a number (real receipt data) plus the admin's
+    central item-number map. Real receipt data wins on conflicts; the manual map
+    fills descriptions the receipts don't cover. Ambiguous auto keys (one
+    description → multiple different numbers) are dropped so we never guess."""
+    auto: dict[str, str] = {}
     ambiguous: set[str] = set()
     for it in line_items:
         num = str(it.get("item_number") or "").strip()
@@ -339,13 +341,16 @@ def build_number_index(line_items) -> dict[str, str]:
         key = _norm_desc(it.get("description"))
         if not key:
             continue
-        if key in m and m[key] != num:
+        if key in auto and auto[key] != num:
             ambiguous.add(key)
         else:
-            m[key] = num
+            auto[key] = num
     for k in ambiguous:
-        m.pop(k, None)
-    return m
+        auto.pop(k, None)
+    if include_manual:
+        from . import item_map
+        return {**item_map.index(), **auto}  # real receipt data overrides manual
+    return auto
 
 
 def backfill_item_numbers(raw_dir: Path = config.RAW_DIR) -> dict:
