@@ -38,6 +38,23 @@ def test_filter_missing_item_number():
     assert [r["description"] for r in res["rows"]] == ["Email item"]  # not the numbered or discount row
 
 
+def test_filter_by_receipt_number():
+    common = {"date": "2026-01-04", "store": "S", "store_number": "1808",
+              "amount": 1.0, "unit_qty": 1, "unit_price": 1.0, "tax_exempt": "",
+              "discount_ref": "", "doc_type": "in-store", "department": "",
+              "source": "publix", "tax_flag": "", "item_number": "1", "order_type": "store"}
+    rows = [
+        {**common, "description": "Donut", "receipt_id": "180814R781967"},
+        {**common, "description": "Milk", "receipt_id": "1808CLQ089106"},
+    ]
+    # exact
+    assert [r["description"] for r in web._search(rows, {"receipt_number": ["180814R781967"]})["rows"]] == ["Donut"]
+    # partial + case-insensitive
+    assert [r["description"] for r in web._search(rows, {"receipt_number": ["clq089"]})["rows"]] == ["Milk"]
+    # no match
+    assert web._search(rows, {"receipt_number": ["ZZZ"]})["count"] == 0
+
+
 def test_filter_by_code():
     assert _descs("F") == ["Bananas"]
     assert _descs("t") == ["Bread"]                 # lowercase != uppercase

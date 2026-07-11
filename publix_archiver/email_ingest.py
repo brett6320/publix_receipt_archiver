@@ -344,6 +344,9 @@ def _parse_items(text: str) -> list[dict]:
 
 
 def parse_receipt_text(text: str) -> dict | None:
+    # Clean leaked email headers/footer up front so store-name and item parsing
+    # (not just the stored ReceiptText) are immune to transport cruft in the body.
+    text = strip_email_cruft(text)
     receipt_id = _find_receipt_id(text)
     grand = _find_total(text)
     if not receipt_id or grand is None:
@@ -385,7 +388,7 @@ def parse_receipt_text(text: str) -> dict | None:
         "GrandTotal": grand,
         "OrderTotal": order_total,
         "TaxAmount": tax,
-        "ReceiptText": strip_email_cruft(text),
+        "ReceiptText": text,   # already cleaned at the top of this function
         "Products": [],
         "ReceiptLineItems": items,
         "ItemCount": len(items),
