@@ -213,7 +213,8 @@ def _job_snapshot():
         return dict(_JOB)
 
 # Columns to free-text search across.
-_TEXT_FIELDS = ["item_number", "description", "store", "store_number",
+_TEXT_FIELDS = ["item_number", "description", "original_description",
+                "store", "store_number",
                 "receipt_id", "doc_type", "source", "department"]
 
 
@@ -229,6 +230,9 @@ def _load_rows() -> list[dict]:
                 r[k] = float(r.get(k) or 0)
             except ValueError:
                 r[k] = 0.0
+        # Older CSVs predate the display/original split — fall back to description.
+        if not r.get("original_description"):
+            r["original_description"] = r.get("description", "")
     return rows
 
 
@@ -930,7 +934,7 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   :root {
     --bg:#f6f7f9; --fg:#1c2126; --muted:#6b7280; --card:#fff; --bd:#d8dbe0;
     --line:#eef0f2; --accent:#007a33; --on-accent:#fff; --thead:#f0f2f5;
-    --rowhover:#fbfcfe; --input-bg:#fff; --chip:#eef1f5; --code:#eef1f5;
+    --nav-bg:#00551f; --rowhover:#fbfcfe; --input-bg:#fff; --chip:#eef1f5; --code:#eef1f5;
     --log-bg:#0e1420; --log-fg:#cfe3ff; --ok:#127a2b; --err:#c5221f;
     color-scheme: light;
   }
@@ -938,7 +942,7 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   :root[data-theme="dark"] {
     --bg:#0f141a; --fg:#e6e9ee; --muted:#9aa4b2; --card:#161b22; --bd:#2b3440;
     --line:#232b34; --accent:#22c55e; --on-accent:#ffffff; --thead:#1b222b;
-    --rowhover:#1a212a; --input-bg:#0f141a; --chip:#222a33; --code:#222a33;
+    --nav-bg:#0d3f24; --rowhover:#1a212a; --input-bg:#0f141a; --chip:#222a33; --code:#222a33;
     --log-bg:#080c12; --log-fg:#cfe3ff; --ok:#4ecb71; --err:#ff6b60;
     color-scheme: dark;
   }
@@ -947,22 +951,23 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     :root[data-theme="system"] {
       --bg:#0f141a; --fg:#e6e9ee; --muted:#9aa4b2; --card:#161b22; --bd:#2b3440;
       --line:#232b34; --accent:#22c55e; --on-accent:#ffffff; --thead:#1b222b;
-      --rowhover:#1a212a; --input-bg:#0f141a; --chip:#222a33; --code:#222a33;
+      --nav-bg:#0d3f24; --rowhover:#1a212a; --input-bg:#0f141a; --chip:#222a33; --code:#222a33;
       --log-bg:#080c12; --log-fg:#cfe3ff; --ok:#4ecb71; --err:#ff6b60;
       color-scheme: dark;
     }
   }
   * { box-sizing:border-box; }
   body { font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin:0; color:var(--fg); background:var(--bg); }
-  header { background:var(--accent); color:var(--on-accent); padding:12px 18px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+  header { background:var(--nav-bg); color:var(--on-accent); padding:12px 18px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
   header h1 { margin:0; font-size:18px; }
-  header .sub { font-size:12px; opacity:.9; }
+  header .sub { font-size:12px; opacity:.95; }
   .tabs { display:flex; gap:6px; margin-left:auto; align-items:center; }
-  .tabs button { background:rgba(255,255,255,.2); color:var(--on-accent); border:0; padding:7px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
-  .tabs button.active { background:var(--card); color:var(--accent); font-weight:600; }
-  .themesel { background:rgba(255,255,255,.2); color:var(--on-accent); border:0; border-radius:6px; padding:6px 8px; font-size:12px; cursor:pointer; }
+  .tabs button { background:rgba(255,255,255,.14); color:#fff; border:1px solid rgba(255,255,255,.45); padding:7px 14px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:500; }
+  .tabs button:hover { background:rgba(255,255,255,.26); }
+  .tabs button.active { background:#fff; color:var(--nav-bg); border-color:#fff; font-weight:700; }
+  .themesel { background:rgba(255,255,255,.14); color:#fff; border:1px solid rgba(255,255,255,.45); border-radius:6px; padding:6px 8px; font-size:12px; cursor:pointer; }
   .themesel option { color:#111; }
-  .whoami { font-size:12px; opacity:.9; }
+  .whoami { font-size:12px; opacity:.95; }
   .whoami:not(:empty)::before { content:"👤 "; }
   .wrap { padding:16px 18px; }
   .card { background:var(--card); border:1px solid var(--bd); border-radius:8px; padding:16px; margin-bottom:14px; }
@@ -1034,6 +1039,7 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     color:var(--muted); border:1px solid var(--bd); border-radius:3px; padding:0 3px;
     margin-right:5px; vertical-align:middle; }
   .disc-mark { color:var(--muted); margin-right:2px; }
+  .hasorig { border-bottom:1px dotted var(--bd); cursor:help; }
   tr.discrow td { color:var(--muted); }
   /* Taxable Y/N column */
   td.taxcol, th.taxcol { text-align:center; }
@@ -1578,7 +1584,12 @@ async function run(){
       const dm = child ? `<span class="disc-mark" title="Applies to the item above">↳</span> ` : "";
       // No filter buttons on discount/tax lines (don't filter on their names).
       const filt = child ? "" : " " + fltBtns('', d, 'this description');
-      v = te + dm + d + filt; }
+      // When the shown name was unified from a fuller source, reveal the line's
+      // own register text on hover (dotted underline hints it's there).
+      const orig = String(r.original_description||"");
+      const dshow = (orig && orig!==d)
+        ? `<span class="hasorig" title="Receipt text: ${attrEsc(orig)}">${d}</span>` : d;
+      v = te + dm + dshow + filt; }
     else if(k==="store_number" && v){ const wn = String(v);
       v = wn + " " + fltBtns('store', wn, 'store '+wn); }
     else if(k==="receipt_id" && v) v = receiptCell(v);
@@ -1783,6 +1794,7 @@ async function delItemMap(desc){
   }catch(e){}
 }
 function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function attrEsc(s){ return esc(s); }   // safe inside a double-quoted HTML attribute
 let _imModalDesc = "";
 function assignItemNumber(descEnc){
   // Open an inline modal carrying the clicked item's name; direct entry first,
