@@ -93,6 +93,28 @@ def strip_email_cruft(text: str) -> str:
     return cleaned
 
 
+def repair_receipt_text(raw_dir: Path = config.RAW_DIR) -> dict:
+    """Overwrite stored receipts whose ReceiptText still carries leaked email
+    cruft/footer with a cleaned version. Idempotent (clean records are left
+    untouched); returns how many records were rewritten."""
+    import json as _json
+    repaired = 0
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        try:
+            rec = _json.loads(f.read_text())
+        except Exception:
+            continue
+        rt = rec.get("ReceiptText")
+        if not isinstance(rt, str) or not rt:
+            continue
+        cleaned = strip_email_cruft(rt)
+        if cleaned != rt:
+            rec["ReceiptText"] = cleaned
+            f.write_text(_json.dumps(rec, indent=2))
+            repaired += 1
+    return {"repaired": repaired}
+
+
 # ---- email → text ---------------------------------------------------------
 
 def _html_to_text(html: str) -> str:

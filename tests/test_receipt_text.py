@@ -1,6 +1,10 @@
 """strip_email_cruft: keep receipt lines, drop leaked email headers / DKIM /
 encoded-words / base64 blobs and the trailing marketing footer."""
-from publix_archiver.email_ingest import strip_email_cruft
+import json
+import tempfile
+from pathlib import Path
+
+from publix_archiver.email_ingest import strip_email_cruft, repair_receipt_text
 
 
 def test_strips_leaked_email_headers_and_blobs():
@@ -46,6 +50,24 @@ def test_length_backstop():
     huge = "GROUND SIRLOIN 5.28 F\n" * 2000   # ~44k chars, no footer/headers
     out = strip_email_cruft(huge)
     assert len(out) <= 12100 and out.endswith("…(truncated)")
+
+
+def test_repair_rewrites_crufty_records_only():
+    tmp = Path(tempfile.mkdtemp())
+    crufty = {"ReceiptId": "C1", "ReceiptText":
+              "Gandy Shopping Center\nTotal 5.00\nThis email was sent to: me@x\nUnsubscribe"}
+    clean = {"ReceiptId": "C2", "ReceiptText": "Gandy Shopping Center\nTotal 9.99"}
+    (tmp / "c1.json").write_text(json.dumps(crufty))
+    (tmp / "c2.json").write_text(json.dumps(clean))
+
+    res = repair_receipt_text(tmp)
+    assert res["repaired"] == 1                     # only the crufty one rewritten
+    r1 = json.loads((tmp / "c1.json").read_text())
+    assert "This email was sent" not in r1["ReceiptText"] and "Total 5.00" in r1["ReceiptText"]
+    r2 = json.loads((tmp / "c2.json").read_text())
+    assert r2["ReceiptText"] == "Gandy Shopping Center\nTotal 9.99"   # untouched
+
+    assert repair_receipt_text(tmp)["repaired"] == 0   # idempotent
 
 
 if __name__ == "__main__":
