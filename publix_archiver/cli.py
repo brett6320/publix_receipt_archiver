@@ -311,19 +311,38 @@ def cmd_backup_delete(args) -> None:
 
 
 def cmd_email_pull(args) -> None:
-    """Pull forwarded Publix receipt emails from the Cloudflare queue → data/raw."""
+    """Pull forwarded Publix receipt emails from the Cloudflare queue → data/raw.
+
+    In --loop mode a failed poll (network/DNS blip, misconfig, Cloudflare error)
+    is logged and retried on the next interval — it never crashes the loop, so
+    the container stays up instead of restart-looping.
+    """
     from . import email_ingest
     from .parse import parse_all
     from .markdown import generate_markdown
     import time
 
     interval = args.interval or config.EMAIL_POLL_INTERVAL
+    if args.loop:
+        print(json.dumps({"status": "email poller started",
+                          "interval_seconds": interval,
+                          "configured": config.email_ingest_configured()}), flush=True)
     while True:
-        summary = email_ingest.pull_from_queue(delete=not args.keep)
-        if summary["saved"]:
-            parse_all()
-            generate_markdown()
-        print(json.dumps(summary))
+        try:
+            if not config.email_ingest_configured():
+                print(json.dumps({"error": "email ingestion not configured — "
+                                  "set R2 + Cloudflare Queue settings (admin UI or env)"}),
+                      flush=True)
+            else:
+                summary = email_ingest.pull_from_queue(delete=not args.keep)
+                if summary.get("saved"):
+                    parse_all()
+                    generate_markdown()
+                print(json.dumps(summary), flush=True)
+        except Exception as ex:
+            if not args.loop:
+                raise
+            print(json.dumps({"error": f"{type(ex).__name__}: {ex}"}), flush=True)
         if not args.loop:
             break
         time.sleep(interval)

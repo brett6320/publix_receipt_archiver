@@ -146,6 +146,49 @@ def test_email_settings_merge_and_secret_preserved():
         config.EMAIL_CONFIG_FILE = orig
 
 
+def test_email_pull_loop_survives_errors():
+    """A failing poll in --loop mode is logged and retried, never crashes."""
+    import types, time as _t
+    from publix_archiver import cli, email_ingest, config as cfg
+    orig = (cfg.email_ingest_configured, email_ingest.pull_from_queue, _t.sleep)
+    cfg.email_ingest_configured = lambda: True
+    def boom(**k): raise RuntimeError("Temporary failure in name resolution")
+    email_ingest.pull_from_queue = boom
+    n = {"sleep": 0}
+    def fake_sleep(s):
+        n["sleep"] += 1
+        raise KeyboardInterrupt  # break the loop after one iteration
+    _t.sleep = fake_sleep
+    args = types.SimpleNamespace(loop=True, interval=1, keep=False)
+    try:
+        try:
+            cli.cmd_email_pull(args)
+        except KeyboardInterrupt:
+            pass
+        # Reaching sleep means the RuntimeError was caught (loop didn't crash).
+        assert n["sleep"] == 1
+    finally:
+        cfg.email_ingest_configured, email_ingest.pull_from_queue, _t.sleep = orig
+
+
+def test_email_pull_oneshot_raises():
+    import types
+    from publix_archiver import cli, email_ingest, config as cfg
+    orig = (cfg.email_ingest_configured, email_ingest.pull_from_queue)
+    cfg.email_ingest_configured = lambda: True
+    def boom(**k): raise RuntimeError("boom")
+    email_ingest.pull_from_queue = boom
+    try:
+        raised = False
+        try:
+            cli.cmd_email_pull(types.SimpleNamespace(loop=False, interval=1, keep=False))
+        except RuntimeError:
+            raised = True
+        assert raised
+    finally:
+        cfg.email_ingest_configured, email_ingest.pull_from_queue = orig
+
+
 if __name__ == "__main__":
     for fn in list(globals()):
         if fn.startswith("test_"):
