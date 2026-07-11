@@ -297,11 +297,46 @@ def receipt_totals(r: dict) -> dict:
 
 
 FIELDS = [
-    "date", "item_number", "description", "unit_qty", "unit_price",
+    "date", "item_number", "description", "original_description",
+    "unit_qty", "unit_price",
     "amount", "department", "tax_flag", "tax_exempt", "store",
     "store_number", "receipt_id", "doc_type", "order_type",
     "discount_ref", "source",
 ]
+
+
+def _desc_score(desc) -> tuple[int, int]:
+    """How 'complete' a description is: (word count, length). A catalog name like
+    'Jennie-O 99%/1% Fresh Ground Turkey Breast (16 oz (1 lb))' outscores the
+    truncated register text 'J/O 99% Gr Turkey Breas'."""
+    s = str(desc or "").strip()
+    return (len(re.findall(r"[A-Za-z]{2,}", s)), len(s))
+
+
+def _display_descriptions(line_items) -> dict[str, str]:
+    """item_number -> the most complete description seen for it (across every
+    receipt line plus the admin map). Used to rewrite abbreviated lines to the
+    fuller name so an item reads and searches consistently."""
+    best: dict[str, tuple] = {}
+
+    def consider(num, desc) -> None:
+        num = str(num or "").strip()
+        desc = str(desc or "").strip()
+        if not num or not desc:
+            return
+        score = _desc_score(desc)
+        cur = best.get(num)
+        if cur is None or score > cur[0]:
+            best[num] = (score, desc)
+
+    for it in line_items:
+        if it.get("order_type") == "discount":
+            continue  # discount rows carry a derived "Savings → …" label
+        consider(it.get("item_number"), it.get("description"))
+    from . import item_map
+    for e in item_map.entries():
+        consider(e.get("item_number"), e.get("description"))
+    return {num: v[1] for num, v in best.items()}
 
 # Size/unit tokens ignored when matching descriptions across sources (a register
 # name like "AB MILK U ORG 96OZ" vs a catalog name), so quantities don't block a
@@ -410,6 +445,21 @@ def parse_all(
             key = _norm_desc(it["description"])
             if key and key in index:
                 it["item_number"] = index[key]
+
+    # Unify descriptions: once an item number is known, rewrite each line to the
+    # most complete description recorded for that number (usually the web-import
+    # catalog name), keeping the line's own register text in
+    # `original_description` so nothing is lost and it stays searchable.
+    display = _display_descriptions(line_items)
+    for it in line_items:
+        it["original_description"] = it["description"]
+        num = str(it.get("item_number") or "").strip()
+        disp = display.get(num) if num else None
+        if disp and disp != it["description"]:
+            if it.get("order_type") == "discount":
+                it["description"] = f"Savings → {disp}"
+            else:
+                it["description"] = disp
 
     line_items.sort(key=lambda x: (x["date"], x["receipt_id"], x["item_number"]), reverse=True)
 
