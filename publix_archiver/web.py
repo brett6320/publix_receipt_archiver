@@ -372,6 +372,7 @@ def _search(rows: list[dict], q: dict) -> dict:
     min_price = _num(q.get("min_price", [""])[0])
     max_price = _num(q.get("max_price", [""])[0])
     item_number = (q.get("item_number", [""])[0] or "").strip()
+    receipt_number = (q.get("receipt_number", [""])[0] or "").strip().lower()
     warehouse = (q.get("warehouse", [""])[0] or "").strip().lower()
     otype_filter = (q.get("order_type", [""])[0] or "").strip().lower()
     # Publix per-item codes are case-sensitive (t = food tax rate vs T = taxable),
@@ -399,6 +400,9 @@ def _search(rows: list[dict], q: dict) -> dict:
         if date_to and (r.get("date") or "") > date_to:
             return False
         if item_number and item_number not in str(r.get("item_number", "")):
+            return False
+        # Receipt number (exact or partial, case-insensitive).
+        if receipt_number and receipt_number not in str(r.get("receipt_id", "")).lower():
             return False
         # Store filter matches either the name or the (atomic) number.
         if warehouse and warehouse not in str(r.get("store", "")).lower() \
@@ -1230,6 +1234,7 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
         <div><label>Date from</label><input id="date_from" type="date"></div>
         <div><label>Date to</label><input id="date_to" type="date"></div>
         <div><label>Item number</label><input id="item_number" placeholder="exact/partial"></div>
+        <div><label>Receipt #</label><input id="receipt_number" placeholder="exact/partial"></div>
         <div><label>Type</label><select id="order_type">
           <option value="">All</option>
           <option value="store">Store</option>
@@ -1513,7 +1518,7 @@ function collapseAll(state){
 }
 
 // ---------- Search ----------
-const inputs = ["q","date_from","date_to","item_number","order_type","tax","warehouse","min_price","max_price"];
+const inputs = ["q","date_from","date_to","item_number","receipt_number","order_type","tax","warehouse","min_price","max_price"];
 let sort = "date", order = "desc";
 const COLS = {
   line: [["date","Date",0],["order_type","Type",0],["item_number","Item #",0],["description","Description",0],
