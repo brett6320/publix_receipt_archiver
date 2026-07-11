@@ -87,6 +87,11 @@ def _index_existing(raw_dir: Path) -> set[str]:
                 f.unlink(missing_ok=True)
             else:
                 f.rename(target)
+        # Email-sourced receipts are the low-detail version: don't add them to
+        # the skip set, so a richer API detail (same ReceiptId) is fetched and
+        # overwrites the email record — upgrading it.
+        if rec.get("Source") == "email":
+            continue
         lk = rec.get("_list_key")
         # Fall back to the detail key for legacy files with no stashed list key
         # (they'll be re-fetched once, then skip cleanly on later runs).

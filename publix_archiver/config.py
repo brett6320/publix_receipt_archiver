@@ -30,6 +30,10 @@ API_REQUEST_FILE = DATA_DIR / "api_request.json"
 # Decoded token / EcmsId cache (short-lived; token ~1 hour).
 CRED_CACHE_FILE = DATA_DIR / "credentials.json"
 
+# Admin-curated description -> item-number map, used to fill missing item numbers
+# on receipts that don't carry them (e.g. email receipts). Central + persistent.
+ITEM_MAP_FILE = DATA_DIR / "item_number_map.json"
+
 # Publix endpoints (undocumented; reverse-engineered from the site's own calls).
 # The purchase-history service is a REST API on services.publix.com; the account
 # pages that call it live on www.publix.com.

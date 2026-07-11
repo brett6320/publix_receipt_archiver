@@ -382,6 +382,20 @@ def cmd_delete(args) -> None:
     print(json.dumps({"receipt": rid, "key": key, "deleted": True}, indent=2))
 
 
+def cmd_item_map(args) -> None:
+    """Manage the central description → item-number map."""
+    from . import item_map
+    if args.item_map_command == "add":
+        print(json.dumps(item_map.add(args.description, args.item_number), indent=2))
+        from .parse import backfill_item_numbers
+        print(json.dumps(backfill_item_numbers(), indent=2))
+    elif args.item_map_command == "remove":
+        item_map.remove(args.description)
+        print(json.dumps({"removed": args.description}, indent=2))
+    else:  # list
+        print(json.dumps(item_map.entries(), indent=2))
+
+
 def _prompt_new_password(username: str) -> str:
     import getpass
     while True:
@@ -613,6 +627,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("delete", help="delete a single receipt by ReceiptId")
     sp.add_argument("receipt_id")
     sp.set_defaults(func=cmd_delete)
+
+    sp = sub.add_parser("item-map", help="manage the description → item-number map")
+    isub = sp.add_subparsers(dest="item_map_command", required=True)
+    a = isub.add_parser("list", help="list mappings")
+    a.set_defaults(func=cmd_item_map)
+    a = isub.add_parser("add", help="add/replace a mapping (then backfill)")
+    a.add_argument("description")
+    a.add_argument("item_number")
+    a.set_defaults(func=cmd_item_map)
+    a = isub.add_parser("remove", help="remove a mapping by description")
+    a.add_argument("description")
+    a.set_defaults(func=cmd_item_map)
 
     return p
 
