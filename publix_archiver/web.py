@@ -329,6 +329,33 @@ def _item_history(rows: list[dict], item: str, desc: str) -> dict:
     }
 
 
+def _item_suggestions(rows: list[dict], q: str, limit: int = 12) -> list[dict]:
+    """Suggest item numbers for a description by searching items we already know
+    the number of (from receipts that carry one). Ranked by shared-word overlap."""
+    import re as _re
+    from .parse import _norm_desc
+    key = _norm_desc(q)
+    qtoks = set(key.split()) if key else set(_re.findall(r"[a-z0-9]+", str(q or "").lower()))
+    if not qtoks:
+        return []
+    best: dict[str, tuple] = {}
+    for r in rows:
+        num = str(r.get("item_number") or "").strip()
+        if not num or str(r.get("order_type") or "") == "discount":
+            continue
+        desc = str(r.get("description") or "")
+        toks = set(_re.findall(r"[a-z0-9]+", desc.lower()))
+        score = len(qtoks & toks)
+        if not score:
+            continue
+        cur = best.get(num)
+        if not cur or score > cur[1] or (score == cur[1] and len(desc) < len(cur[0])):
+            best[num] = (desc, score)
+    out = [{"item_number": k, "description": v[0], "score": v[1]} for k, v in best.items()]
+    out.sort(key=lambda x: (-x["score"], len(x["description"])))
+    return out[:limit]
+
+
 def _search(rows: list[dict], q: dict) -> dict:
     filters = _parse_query(q.get("q", [""])[0] or "")
     date_from = (q.get("date_from", [""])[0] or "").strip()
@@ -567,6 +594,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             from . import item_map
             self._send(200, json.dumps({"entries": item_map.entries()}).encode())
+        elif path == "/api/item-suggest":
+            if not self._require_admin():
+                return
+            q = (parse_qs(parsed.query).get("q", [""])[0] or "")
+            self._send(200, json.dumps(
+                {"suggestions": _item_suggestions(self.rows, q)}).encode())
         elif path.startswith("/api/backups/download/"):
             if not self._require_admin():
                 return
@@ -946,6 +979,8 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   .cfgrid input { width:100%; box-sizing:border-box; }
   .rowdel { cursor:pointer; color:#c0392b; opacity:.75; margin-left:6px; }
   .rowdel:hover { opacity:1; }
+  .suggrow { padding:5px 8px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
+  .suggrow:hover { background:var(--rowhover); border-color:var(--bd); }
   .msg { font-size:13px; margin-top:8px; }
   .msg.ok { color:var(--ok); } .msg.err { color:var(--err); }
   .bar { height:10px; background:var(--chip); border-radius:6px; overflow:hidden; margin:10px 0; }
@@ -1219,8 +1254,17 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     <label style="font-size:11px;color:var(--muted)">Description</label>
     <div id="imModalDesc" style="font-weight:600;margin:2px 0 12px;word-break:break-word"></div>
     <label style="font-size:11px;color:var(--muted)">Item number</label>
-    <input id="imModalNum" style="width:100%;box-sizing:border-box" placeholder="e.g. 12345"
+    <input id="imModalNum" style="width:100%;box-sizing:border-box" placeholder="enter directly, or pick a suggestion below"
            onkeydown="if(event.key==='Enter') saveItemMapModal()">
+    <div style="margin-top:12px">
+      <label style="font-size:11px;color:var(--muted)">Search suggestions (from items you already have)</label>
+      <div class="inline" style="gap:8px;margin-top:3px">
+        <input id="imSearchQ" style="flex:1;min-width:0" placeholder="search term"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();searchItemSuggest();}">
+        <button class="btn secondary" onclick="searchItemSuggest()">Search</button>
+      </div>
+      <div id="imSuggest" style="margin-top:8px;font-size:13px;max-height:180px;overflow:auto"></div>
+    </div>
     <div class="inline" style="margin-top:14px;justify-content:flex-end">
       <span class="msg" id="imModalMsg" style="margin-right:auto"></span>
       <button class="btn secondary" onclick="closeItemMapModal()">Cancel</button>
@@ -1738,18 +1782,37 @@ async function delItemMap(desc){
     if(r.ok){ loadItemMap(); run(); loadMeta(); }
   }catch(e){}
 }
+function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 let _imModalDesc = "";
 function assignItemNumber(descEnc){
-  // Open an inline modal carrying the clicked item's name; the admin just types
-  // the number and saves — no tab switch. (descEnc is URL-encoded.)
+  // Open an inline modal carrying the clicked item's name; direct entry first,
+  // with search suggestions as a fallback. (descEnc is URL-encoded.)
   const desc = decodeURIComponent(descEnc);
   _imModalDesc = desc;
   $("imModalDesc").textContent = desc;
   $("imModalNum").value = "";
   $("imModalMsg").textContent = "";
+  $("imSearchQ").value = desc;
+  $("imSuggest").innerHTML = "";
   $("imModal").classList.remove("hidden");
   setTimeout(()=>$("imModalNum").focus(), 30);
+  searchItemSuggest();   // auto-suggest from what we already have
 }
+async function searchItemSuggest(){
+  const q = $("imSearchQ").value.trim();
+  const box = $("imSuggest");
+  if(!q){ box.innerHTML=""; return; }
+  box.innerHTML = '<span style="color:var(--muted)">Searching…</span>';
+  try{
+    const j = await (await api("/api/item-suggest?q="+encodeURIComponent(q))).json();
+    const s = j.suggestions||[];
+    box.innerHTML = s.length ? s.map(x=>
+      `<div class="suggrow" title="Use ${esc(x.item_number)}" onclick="pickSuggest('${esc(x.item_number)}')">`+
+      `<b>${esc(x.item_number)}</b> <span style="color:var(--muted)">${esc(x.description)}</span></div>`).join('')
+      : '<span style="color:var(--muted)">No matches among your items — enter the number directly.</span>';
+  }catch(e){ box.innerHTML='<span style="color:var(--muted)">Search failed.</span>'; }
+}
+function pickSuggest(num){ $("imModalNum").value = num; $("imModalNum").focus(); $("imModalMsg").textContent="Picked "+num+" — review and Save."; }
 function closeItemMapModal(){ $("imModal").classList.add("hidden"); }
 async function saveItemMapModal(){
   const num = $("imModalNum").value.trim();
