@@ -795,6 +795,24 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({"error": str(ex)}).encode())
             except Exception as ex:
                 self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/item-name":
+            if not self._require_admin():
+                return
+            from . import item_names
+            body = self._read_json()
+            try:
+                result = {"ok": True, "saved": item_names.put(
+                    body.get("item_number", ""), body.get("name", ""))}
+                # Rewriting descriptions happens at parse time; reparse + reload
+                # so the new name shows immediately on every line for this item.
+                from .parse import parse_all
+                parse_all()
+                _Handler.rows = _load_rows()
+                self._send(200, json.dumps(result).encode())
+            except ValueError as ex:
+                self._send(400, json.dumps({"error": str(ex)}).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
         elif path == "/api/email/pull":
             if not self._require_admin():
                 return
@@ -1279,6 +1297,25 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   </div>
 </div>
 
+<div id="enModal" class="modal hidden" onclick="if(event.target===this) closeEnModal()">
+  <div class="modalCard" style="max-width:460px">
+    <div class="modalHead"><b>Edit item name</b><span class="modalX" title="Close" onclick="closeEnModal()">✕</span></div>
+    <p style="font-size:13px;color:var(--muted);margin:2px 0 12px">
+      Set a custom display name for item <b id="enNum"></b>. It overrides the
+      automatic name on every line for this item. Clear it (or Reset to auto) to
+      go back to the fullest name found on your receipts.</p>
+    <label style="font-size:11px;color:var(--muted)">Display name</label>
+    <input id="enName" style="width:100%;box-sizing:border-box" placeholder="custom item name"
+           onkeydown="if(event.key==='Enter') saveItemName()">
+    <div class="inline" style="margin-top:14px;justify-content:flex-end">
+      <span class="msg" id="enMsg" style="margin-right:auto"></span>
+      <button class="btn secondary" onclick="resetItemName()">Reset to auto</button>
+      <button class="btn secondary" onclick="closeEnModal()">Cancel</button>
+      <button class="btn" id="enSave" onclick="saveItemName()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 // Any API 401 means the session lapsed — bounce to the login page.
@@ -1589,7 +1626,10 @@ async function run(){
       const orig = String(r.original_description||"");
       const dshow = (orig && orig!==d)
         ? `<span class="hasorig" title="Receipt text: ${attrEsc(orig)}">${d}</span>` : d;
-      v = te + dm + dshow + filt; }
+      // Admins can pin a custom display name for a (numbered) item.
+      const edit = (window.IS_ADMIN && !child && r.item_number)
+        ? ` <span class="rowdel editname" title="Edit this item's name (admin)" onclick="editItemName('${String(r.item_number)}','${encodeURIComponent(d).replace(/'/g,'%27')}')">✎</span>` : "";
+      v = te + dm + dshow + filt + edit; }
     else if(k==="store_number" && v){ const wn = String(v);
       v = wn + " " + fltBtns('store', wn, 'store '+wn); }
     else if(k==="receipt_id" && v) v = receiptCell(v);
@@ -1684,7 +1724,7 @@ $("group").addEventListener("change", ()=>{ sort = $("group").checked?"total_spe
 $("collapseOrders").addEventListener("change", ()=> collapseAll($("collapseOrders").checked));
 $("discounted").addEventListener("change", run);
 $("no_item").addEventListener("change", run);
-document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closePriceModal(); closeItemMapModal(); } });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closePriceModal(); closeItemMapModal(); closeEnModal(); } });
 $("reset").onclick = ()=>{ inputs.forEach(k=>$(k).value=""); $("group").checked=false;
   $("discounted").checked=false; $("no_item").checked=false; $("collapseOrders").checked=false; collapsed.clear();
   sort="date"; order="desc"; run(); };
@@ -1825,6 +1865,29 @@ async function searchItemSuggest(){
   }catch(e){ box.innerHTML='<span style="color:var(--muted)">Search failed.</span>'; }
 }
 function pickSuggest(num){ $("imModalNum").value = num; $("imModalNum").focus(); $("imModalMsg").textContent="Picked "+num+" — review and Save."; }
+let _enItem = "";
+function editItemName(num, dEnc){
+  _enItem = String(num);
+  $("enNum").textContent = num;
+  $("enName").value = decodeURIComponent(dEnc);
+  $("enMsg").textContent = "";
+  $("enModal").classList.remove("hidden");
+  setTimeout(()=>{ $("enName").focus(); $("enName").select(); }, 30);
+}
+function closeEnModal(){ $("enModal").classList.add("hidden"); }
+async function saveItemName(){ await _postItemName($("enName").value.trim()); }
+async function resetItemName(){ await _postItemName(""); }   // empty name clears the override
+async function _postItemName(name){
+  const msg = $("enMsg"); $("enSave").disabled = true; msg.textContent = "Saving…";
+  try{
+    const r = await api("/api/item-name",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({item_number:_enItem, name})});
+    const j = await r.json();
+    if(r.ok){ closeEnModal(); run(); loadMeta(); }
+    else msg.textContent = j.error || "Failed";
+  }catch(e){ msg.textContent = "Failed."; }
+  finally{ $("enSave").disabled = false; }
+}
 function closeItemMapModal(){ $("imModal").classList.add("hidden"); }
 async function saveItemMapModal(){
   const num = $("imModalNum").value.trim();
