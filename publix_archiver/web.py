@@ -1520,7 +1520,7 @@ async function run(){
         : (itemLink(num2) + " " + fltBtns('item', num2, 'item '+num2)); }
     else if(k==="item_number" && !v && window.IS_ADMIN && !isChild(r.order_type) && r.description){
       // No number (e.g. email receipt) — let admins add a central mapping.
-      v = `<span class="rowdel" style="color:var(--muted)" title="Add item number for this description" onclick="assignItemNumber(${JSON.stringify(String(r.description))})">＋#</span>`; }
+      v = `<span class="rowdel additem" style="color:var(--accent);font-weight:600" title="Add item number for this description" onclick="assignItemNumber('${encodeURIComponent(String(r.description)).replace(/'/g,'%27')}')">＋ #</span>`; }
     else if(k==="description" && v){ const d = String(v);
       const te = (r.tax_exempt==="Y") ? `<span class="tebadge" title="Tax-exempt (E)">E</span>` : "";
       const child = isChild(r.order_type);
@@ -1731,9 +1731,10 @@ async function delItemMap(desc){
   }catch(e){}
 }
 let _imModalDesc = "";
-function assignItemNumber(desc){
+function assignItemNumber(descEnc){
   // Open an inline modal carrying the clicked item's name; the admin just types
-  // the number and saves — no tab switch.
+  // the number and saves — no tab switch. (descEnc is URL-encoded.)
+  const desc = decodeURIComponent(descEnc);
   _imModalDesc = desc;
   $("imModalDesc").textContent = desc;
   $("imModalNum").value = "";
@@ -1812,7 +1813,7 @@ async function deleteBackup(name){
 (async ()=>{
   const sel = document.getElementById('theme');
   if(sel) sel.value = localStorage.getItem('theme') || 'system';
-  loadWhoami();
+  await loadWhoami();   // set IS_ADMIN before the first render so admin controls show
   loadMeta();
   run();  // Search is the landing page — populate it immediately.
   const s = await (await fetch("/api/collect/status")).json();
