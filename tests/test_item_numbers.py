@@ -9,10 +9,15 @@ from publix_archiver import parse as P
 
 
 def test_norm_desc_token_set():
-    # Word order and case don't matter; short/generic descriptions don't match.
+    # Word order and case don't matter; size tokens are dropped.
     assert P._norm_desc("TOMATO BEEFSTEAK") == P._norm_desc("Beefsteak Tomato")
     assert P._norm_desc("AB MILK U ORG 96OZ") == P._norm_desc("org u milk ab")  # 96oz dropped
-    assert P._norm_desc("MILK") is None            # single token — too generic
+    # Single-word items are kept (BANANAS, MILK)...
+    assert P._norm_desc("BANANAS") == "bananas"
+    assert P._norm_desc("MILK") == "milk"
+    # ...and don't collide with a longer name that contains the word.
+    assert P._norm_desc("BANANAS") != P._norm_desc("Organic Bananas")
+    assert P._norm_desc("16 OZ") is None           # only size/number -> nothing to match
 
 
 def test_build_index_unambiguous():

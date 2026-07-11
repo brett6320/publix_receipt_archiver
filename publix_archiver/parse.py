@@ -311,18 +311,19 @@ _UNIT_TOKENS = {"oz", "lb", "lbs", "ct", "cnt", "count", "ea", "each", "pk", "pa
 
 
 def _norm_desc(desc) -> str | None:
-    """A normalized token-set key for a description, or None if too generic.
+    """A normalized token-set key for a description, or None if there's nothing
+    meaningful to match on.
 
-    Lowercases, keeps alphabetic tokens (drops pure numbers and size/unit tokens
-    like "96oz"), and sorts them — so "TOMATO BEEFSTEAK" and "Beefsteak Tomato"
-    share a key. Requires >=2 tokens to avoid over-broad matches."""
+    Lowercases, keeps word tokens (drops pure numbers and size/unit tokens like
+    "96oz"), and sorts them — so "TOMATO BEEFSTEAK" and "Beefsteak Tomato" share
+    a key. Single-word items (BANANAS, MILK) are kept; token-sets are exact, so
+    "bananas" and "bananas organic" stay distinct and never collide."""
     toks = re.findall(r"[a-z0-9]+", str(desc or "").lower())
     keep = [t for t in toks
             if not t.isdigit() and t not in _UNIT_TOKENS
             and not re.fullmatch(r"\d+[a-z]{1,3}", t)]
-    if len(keep) < 2:
-        return None
-    return " ".join(sorted(keep))
+    key = " ".join(sorted(keep))
+    return key if len(key) >= 2 else None
 
 
 def build_number_index(line_items, include_manual: bool = True) -> dict[str, str]:
