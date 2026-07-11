@@ -154,6 +154,36 @@ python -m publix_archiver backup restore receipts-YYYYMMDD-HHMMSS.tar.gz
 python -m publix_archiver backup delete  receipts-YYYYMMDD-HHMMSS.tar.gz
 ```
 
+### Email ingestion (Cloudflare)
+
+Publix can email itemized e-receipts (enable it in Receipt Preferences). Forward
+them to a Cloudflare Email Routing address; an **Email Worker** keeps only genuine
+Publix receipts (works even though forwarding rewrites the sender), stores each
+raw `.eml` in **R2**, and enqueues a reference on a **Cloudflare Queue**. The
+archiver's poller pulls the queue, ingests, and **deletes on success**. Emailed
+receipts dedupe against API-fetched ones (same `ReceiptId`).
+
+Set it up once — see **[`cloudflare/README.md`](cloudflare/README.md)** for the
+full Cloudflare-side config (Email Routing, R2 bucket, Queue, API token). Then
+configure the archiver in the **admin UI** (Collect tab → *Email ingestion*) or
+via `PUBLIX_R2_*` / `PUBLIX_CF_*` env vars, and run the poller:
+
+```bash
+python -m publix_archiver email-pull --loop            # every 5 min (configurable)
+python -m publix_archiver email-pull --loop --interval 120
+python -m publix_archiver import-eml path/to/receipt.eml   # or ingest local .eml files
+```
+
+Or run the bundled poller container: `docker compose --profile email up -d email-poller`.
+Admins can also **Poll now** from the UI.
+
+### Admin actions
+
+Admin accounts can, from the web UI: run collections, manage **backups**,
+configure **email ingestion**, and **delete a receipt** (🗑 next to each receipt,
+with confirmation — removes its data, PDF, and Markdown). CLI:
+`python -m publix_archiver delete <ReceiptId>`.
+
 ## Usage
 
 ```bash

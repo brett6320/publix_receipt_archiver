@@ -91,6 +91,110 @@ USER_AGENT = (
 )
 
 
+# --- Email ingestion via Cloudflare R2 ---------------------------------------
+# A Cloudflare Email Worker drops raw Publix receipt .eml objects into an R2
+# bucket; the poller pulls them (S3-compatible API), ingests, and deletes them.
+R2_ACCOUNT_ID = os.environ.get("PUBLIX_R2_ACCOUNT_ID", "")
+R2_ENDPOINT = os.environ.get("PUBLIX_R2_ENDPOINT") or (
+    f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else "")
+R2_BUCKET = os.environ.get("PUBLIX_R2_BUCKET", "")
+R2_ACCESS_KEY_ID = os.environ.get("PUBLIX_R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.environ.get("PUBLIX_R2_SECRET_ACCESS_KEY", "")
+R2_PREFIX = os.environ.get("PUBLIX_R2_PREFIX", "")  # e.g. "receipts/"
+
+# Cloudflare Queue: the Worker enqueues a reference {bucket,key} per new R2
+# object; the poller is an HTTP pull consumer that fetches, ingests, deletes the
+# object, and acks the message. Needs an API token with Queues read/write.
+CF_ACCOUNT_ID = os.environ.get("PUBLIX_CF_ACCOUNT_ID") or R2_ACCOUNT_ID
+CF_QUEUE_ID = os.environ.get("PUBLIX_CF_QUEUE_ID", "")
+CF_API_TOKEN = os.environ.get("PUBLIX_CF_API_TOKEN", "")
+
+# How often the email poller pulls the queue, in seconds (default 5 minutes).
+try:
+    EMAIL_POLL_INTERVAL = int(os.environ.get("PUBLIX_EMAIL_POLL_INTERVAL") or 300)
+except ValueError:
+    EMAIL_POLL_INTERVAL = 300
+
+
+# Admin-editable email-ingest settings live here (git-ignored, 0600). Values
+# saved from the web UI override the env defaults above, so the poller container
+# (which shares ./data) picks them up too.
+EMAIL_CONFIG_FILE = DATA_DIR / "email_config.json"
+
+# Keys stored in EMAIL_CONFIG_FILE, each paired with its env default.
+_EMAIL_KEYS = {
+    "r2_account_id": lambda: R2_ACCOUNT_ID,
+    "r2_endpoint": lambda: R2_ENDPOINT,
+    "r2_bucket": lambda: R2_BUCKET,
+    "r2_access_key_id": lambda: R2_ACCESS_KEY_ID,
+    "r2_secret_access_key": lambda: R2_SECRET_ACCESS_KEY,
+    "r2_prefix": lambda: R2_PREFIX,
+    "cf_account_id": lambda: CF_ACCOUNT_ID,
+    "cf_queue_id": lambda: CF_QUEUE_ID,
+    "cf_api_token": lambda: CF_API_TOKEN,
+    "poll_interval": lambda: EMAIL_POLL_INTERVAL,
+}
+_SECRET_EMAIL_KEYS = {"r2_secret_access_key", "cf_api_token"}
+
+
+def email_settings() -> dict:
+    """Effective email-ingest settings: saved file merged over env defaults."""
+    import json
+    out = {k: default() for k, default in _EMAIL_KEYS.items()}
+    try:
+        saved = json.loads(EMAIL_CONFIG_FILE.read_text())
+        for k in _EMAIL_KEYS:
+            if saved.get(k) not in (None, ""):
+                out[k] = saved[k]
+    except Exception:
+        pass
+    # Derive the endpoint from the account id when only that was given.
+    if not out["r2_endpoint"] and out["r2_account_id"]:
+        out["r2_endpoint"] = f"https://{out['r2_account_id']}.r2.cloudflarestorage.com"
+    if not out["cf_account_id"]:
+        out["cf_account_id"] = out["r2_account_id"]
+    try:
+        out["poll_interval"] = int(out["poll_interval"] or 300)
+    except (ValueError, TypeError):
+        out["poll_interval"] = 300
+    return out
+
+
+def save_email_settings(values: dict) -> None:
+    """Persist email-ingest settings (0600). Blank secret fields are preserved."""
+    import json
+    current = {}
+    try:
+        current = json.loads(EMAIL_CONFIG_FILE.read_text())
+    except Exception:
+        pass
+    for k in _EMAIL_KEYS:
+        if k in values:
+            v = values[k]
+            # An empty secret field means "leave unchanged" (not "clear").
+            if k in _SECRET_EMAIL_KEYS and (v is None or v == ""):
+                continue
+            current[k] = v
+    ensure_dirs()
+    EMAIL_CONFIG_FILE.write_text(json.dumps(current, indent=2))
+    try:
+        EMAIL_CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+def r2_configured() -> bool:
+    s = email_settings()
+    return bool(s["r2_endpoint"] and s["r2_bucket"]
+                and s["r2_access_key_id"] and s["r2_secret_access_key"])
+
+
+def email_ingest_configured() -> bool:
+    s = email_settings()
+    return bool(r2_configured() and s["cf_account_id"] and s["cf_queue_id"]
+                and s["cf_api_token"])
+
+
 def ensure_dirs() -> None:
     for d in (DATA_DIR, RAW_DIR, OUTPUT_DIR, PDF_DIR):
         d.mkdir(parents=True, exist_ok=True)

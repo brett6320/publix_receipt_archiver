@@ -99,6 +99,18 @@ def _load_creds():
         return None
 
 
+def _email_config_view() -> dict:
+    """Effective email-ingest settings for the admin UI, secrets masked to a
+    boolean 'is it set'."""
+    s = config.email_settings()
+    secrets = {"r2_secret_access_key", "cf_api_token"}
+    out = {}
+    for k, v in s.items():
+        out[k] = bool(v) if k in secrets else v
+    out["configured"] = config.email_ingest_configured()
+    return out
+
+
 def _run_collection(do_pdf: bool):
     from .fetch import fetch_all_receipts
     from .parse import parse_all
@@ -536,6 +548,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             from . import backup
             self._send(200, json.dumps({"backups": backup.list_backups()}).encode())
+        elif path == "/api/email/config":
+            if not self._require_admin():
+                return
+            self._send(200, json.dumps(_email_config_view()).encode())
         elif path.startswith("/api/backups/download/"):
             if not self._require_admin():
                 return
@@ -696,6 +712,48 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(404, json.dumps({"error": "backup not found"}).encode())
             except Exception as ex:
                 self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/email/config":
+            if not self._require_admin():
+                return
+            try:
+                config.save_email_settings(self._read_json() or {})
+                self._send(200, json.dumps({"ok": True, "config": _email_config_view()}).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/email/pull":
+            if not self._require_admin():
+                return
+            if not config.email_ingest_configured():
+                self._send(400, json.dumps(
+                    {"error": "Email ingestion isn't configured yet."}).encode())
+                return
+            try:
+                from . import email_ingest
+                from .parse import parse_all
+                result = email_ingest.pull_from_queue()
+                if result.get("saved"):
+                    parse_all()
+                    _Handler.rows = _load_rows()
+                self._send(200, json.dumps(result).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/receipts/delete":
+            if not self._require_admin():
+                return
+            rid = str(self._read_json().get("receipt_id", "")).strip()
+            key = _raw_key_for(rid) if rid else None
+            if not key:
+                self._send(404, json.dumps({"error": "receipt not found"}).encode())
+                return
+            try:
+                from .parse import parse_all
+                _delete_receipt_artifacts(key)
+                parse_all()
+                _Handler.rows = _load_rows()
+                self._send(200, json.dumps(
+                    {"ok": True, "receipt_id": rid, "key": key}).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
         else:
             self._send(404, b'{"error":"not found"}')
 
@@ -845,6 +903,11 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   .btn:disabled { opacity:.5; cursor:default; }
   .btn.secondary { background:var(--chip); color:var(--fg); }
   .inline { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .cfgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px 16px; }
+  .cfgrid label { font-size:11px; color:var(--muted); display:block; margin-bottom:3px; }
+  .cfgrid input { width:100%; box-sizing:border-box; }
+  .rowdel { cursor:pointer; color:#c0392b; opacity:.75; margin-left:6px; }
+  .rowdel:hover { opacity:1; }
   .msg { font-size:13px; margin-top:8px; }
   .msg.ok { color:var(--ok); } .msg.err { color:var(--err); }
   .bar { height:10px; background:var(--chip); border-radius:6px; overflow:hidden; margin:10px 0; }
@@ -1007,6 +1070,31 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
         <span class="msg" id="backupMsg"></span>
       </div>
       <div id="backupList" style="margin-top:12px;font-size:13px"></div>
+    </div>
+
+    <div class="card admin-only hidden" id="emailCard">
+      <h2>5 · Email ingestion <span style="font-size:12px;color:var(--muted)">(admin)</span></h2>
+      <p style="font-size:13px;color:var(--muted);margin:0 0 10px">
+        Forward Publix receipt emails to a Cloudflare address; a Worker stores each
+        raw email in R2 and enqueues it. This poller pulls the queue, ingests, and
+        deletes. See <code>cloudflare/README.md</code> for setup. Secrets are write-only
+        — leave a secret blank to keep the current value.</p>
+      <div class="cfgrid">
+        <div><label>R2 account id</label><input id="ecfg_r2_account_id"></div>
+        <div><label>R2 endpoint (optional)</label><input id="ecfg_r2_endpoint" placeholder="derived from account id"></div>
+        <div><label>R2 bucket</label><input id="ecfg_r2_bucket" placeholder="publix-receipts"></div>
+        <div><label>R2 prefix</label><input id="ecfg_r2_prefix" placeholder="receipts/"></div>
+        <div><label>R2 access key id</label><input id="ecfg_r2_access_key_id"></div>
+        <div><label>R2 secret</label><input id="ecfg_r2_secret_access_key" type="password" placeholder="••• unchanged"></div>
+        <div><label>Queue id</label><input id="ecfg_cf_queue_id"></div>
+        <div><label>API token</label><input id="ecfg_cf_api_token" type="password" placeholder="••• unchanged"></div>
+        <div><label>Poll interval (sec)</label><input id="ecfg_poll_interval" type="number" min="30" placeholder="300"></div>
+      </div>
+      <div class="inline" style="margin-top:10px">
+        <button class="btn" id="emailSaveBtn" onclick="saveEmailConfig()">Save settings</button>
+        <button class="btn secondary" id="emailPollBtn" onclick="pollEmail()">Poll now</button>
+        <span class="msg" id="emailMsg"></span>
+      </div>
     </div>
   </div>
 
@@ -1347,7 +1435,8 @@ async function run(){
   // onto the Date cell of an order's first line).
   const receiptCell = v => `<a class="pdf" href="/pdf/${encodeURIComponent(v)}" target="_blank" rel="noopener">${v.slice(0,10)}…</a> `
     + fltBtns('rcpt', v, 'this order')
-    + ` <span class="rfr" title="Refresh this receipt's PDF, barcode & Markdown" onclick="refreshOne('${v}', this)">↻</span>`;
+    + ` <span class="rfr" title="Refresh this receipt's PDF, barcode & Markdown" onclick="refreshOne('${v}', this)">↻</span>`
+    + (window.IS_ADMIN ? ` <span class="rowdel" title="Delete this receipt (admin)" onclick="deleteReceipt('${v}')">🗑</span>` : "");
   const cell = (r,k,num) => {
     let v = r[k];
     if(num){
@@ -1508,8 +1597,47 @@ async function loadWhoami(){
     const s = await (await fetch("/api/auth/status")).json();
     const el = $("whoami"); if(el) el.textContent = s.user || "";
     document.querySelectorAll('.admin-only').forEach(e=>e.classList.toggle('hidden', !s.is_admin));
-    if(s.is_admin) loadBackups();
+    window.IS_ADMIN = !!s.is_admin;
+    if(s.is_admin){ loadBackups(); loadEmailConfig(); }
   }catch(e){}
+}
+const _ECFG = ["r2_account_id","r2_endpoint","r2_bucket","r2_prefix","r2_access_key_id",
+               "r2_secret_access_key","cf_queue_id","cf_api_token","poll_interval"];
+async function loadEmailConfig(){
+  try{
+    const c = await (await api("/api/email/config")).json();
+    _ECFG.forEach(k=>{ const el=$("ecfg_"+k); if(!el) return;
+      if(k==="r2_secret_access_key"||k==="cf_api_token"){ el.value=""; el.placeholder = c[k] ? "••• set (unchanged)" : "not set"; }
+      else el.value = (c[k]==null?"":c[k]);
+    });
+    const m=$("emailMsg"); if(m) m.textContent = c.configured ? "Configured ✓" : "Not configured yet.";
+  }catch(e){}
+}
+async function saveEmailConfig(){
+  const body={}; _ECFG.forEach(k=>{ const el=$("ecfg_"+k); if(el) body[k]=el.value; });
+  const m=$("emailMsg"); m.textContent="Saving…";
+  try{
+    const r=await api("/api/email/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j=await r.json();
+    m.textContent = r.ok ? "Saved." : (j.error||"Failed");
+    loadEmailConfig();
+  }catch(e){ m.textContent="Failed."; }
+}
+async function pollEmail(){
+  const m=$("emailMsg"); m.textContent="Polling…";
+  try{
+    const r=await api("/api/email/pull",{method:"POST"});
+    const j=await r.json();
+    m.textContent = r.ok ? `Pulled: ${j.saved} new, ${j.skipped_existing} dup, ${j.ignored_non_receipt} ignored, ${j.deleted} removed` : (j.error||"Failed");
+    if(r.ok && j.saved){ run(); loadMeta(); }
+  }catch(e){ m.textContent="Failed."; }
+}
+async function deleteReceipt(rid){
+  if(!confirm("Delete receipt "+rid+"?\nThis removes its data, PDF and Markdown. This cannot be undone.")) return;
+  try{
+    const r=await api("/api/receipts/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({receipt_id:rid})});
+    if(r.ok){ run(); loadMeta(); } else { const j=await r.json(); alert(j.error||"Delete failed"); }
+  }catch(e){ alert("Delete failed"); }
 }
 function fmtBytes(n){ n=Number(n)||0; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
 async function loadBackups(){

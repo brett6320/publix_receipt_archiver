@@ -11,3 +11,26 @@ services:
       # Persist receipts, CSVs, PDFs, markdown, and credentials on the host.
       - ./data:/app/data
     restart: unless-stopped
+
+  # Email ingestion poller: pulls forwarded Publix receipts from the Cloudflare
+  # queue (see cloudflare/README.md), ingests them, and deletes on success.
+  # Shares ./data with `web`, so it also honors settings saved in the admin UI
+  # (data/email_config.json). Runs only under the `email` profile.
+  email-poller:
+    build: .
+    image: publix-receipt-archiver
+    profiles: ["email"]
+    command: ["python", "-m", "publix_archiver", "email-pull", "--loop"]
+    environment:
+      # These are optional if you configure email ingestion in the admin UI.
+      PUBLIX_EMAIL_POLL_INTERVAL: ${PUBLIX_EMAIL_POLL_INTERVAL:-300}
+      PUBLIX_R2_ACCOUNT_ID: ${PUBLIX_R2_ACCOUNT_ID:-}
+      PUBLIX_R2_BUCKET: ${PUBLIX_R2_BUCKET:-}
+      PUBLIX_R2_ACCESS_KEY_ID: ${PUBLIX_R2_ACCESS_KEY_ID:-}
+      PUBLIX_R2_SECRET_ACCESS_KEY: ${PUBLIX_R2_SECRET_ACCESS_KEY:-}
+      PUBLIX_R2_PREFIX: ${PUBLIX_R2_PREFIX:-receipts/}
+      PUBLIX_CF_QUEUE_ID: ${PUBLIX_CF_QUEUE_ID:-}
+      PUBLIX_CF_API_TOKEN: ${PUBLIX_CF_API_TOKEN:-}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

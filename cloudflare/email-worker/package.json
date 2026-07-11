@@ -1,0 +1,14 @@
+{
+  "name": "publix-receipt-email-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Email Worker: filter Publix receipt emails, store in R2, enqueue a reference.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

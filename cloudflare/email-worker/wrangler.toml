@@ -1,0 +1,17 @@
+name = "publix-receipt-email"
+main = "src/worker.js"
+compatibility_date = "2024-11-06"
+
+# Optional: object key prefix inside the bucket (matches PUBLIX_R2_PREFIX).
+[vars]
+R2_PREFIX = "receipts/"
+
+# The raw .eml files land here (create with: wrangler r2 bucket create publix-receipts).
+[[r2_buckets]]
+binding = "RECEIPTS_BUCKET"
+bucket_name = "publix-receipts"
+
+# A reference {key} is enqueued here (create with: wrangler queues create publix-receipts).
+[[queues.producers]]
+binding = "RECEIPTS_QUEUE"
+queue = "publix-receipts"

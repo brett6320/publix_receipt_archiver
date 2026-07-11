@@ -208,7 +208,9 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
             "unit_price": _num(li.get("ItemPrice")),
             "amount": amount,
             "department": str(prod.get("RetailSubSectionNumber") or "").strip() if prod else "",
-            "tax_flag": tax_codes[idx] if idx < len(tax_codes) else "",
+            # Prefer a per-line code (email records carry one); else the code
+            # read back from ReceiptText by amount (API records).
+            "tax_flag": li.get("TaxCode") or (tax_codes[idx] if idx < len(tax_codes) else ""),
             "store": store,
             "store_number": store_no,
             "receipt_id": receipt_id,
@@ -246,6 +248,10 @@ def is_placeholder(record: dict) -> bool:
     """
     lines = record.get("ReceiptLineItems") or []
     if not lines:
+        return False
+    # Email receipts are complete text receipts with no product catalog — the
+    # line items carry their own register descriptions, so never a placeholder.
+    if record.get("Source") == "email":
         return False
     products = record.get("Products") or []
     has_named_product = any((p.get("ItemName") or "").strip() for p in products)
