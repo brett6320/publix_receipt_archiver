@@ -58,6 +58,24 @@ def test_template_b_code_before_amount_and_bare_id():
     assert codes["Milk"] == "T" and codes["Wheat"] == "F"
 
 
+# Template C (older): all-numeric 5-group Receipt ID, a negative coupon line,
+# and the store number only in the footer (S0310, not the id prefix).
+_TEMPLATE_C = """<div>Publix Super Markets, Inc.<br>Sample Plaza<br>123 Example Ave<br>
+Sampletown, FL 00000<br>Store Manager: Test<br>555-555-5555<br>
+CRAISINS 6.29 F<br>PUBLIX WATER 2.29 F<br>DC Publix -5.00 F<br>
+Order Total 3.58<br>Sales Tax 0.00<br>Grand Total 3.58<br>Credit Payment 3.58<br>
+Receipt ID: 5417 9660 5160 3902 038<br>10/22/2021 19:04 S0310 R109 9713 C0123<br></div>"""
+
+
+def test_template_c_numeric_id_and_negative_coupon():
+    rec = E.parse_eml(_eml("Your Publix receipt.", _TEMPLATE_C))
+    assert rec and rec["ReceiptId"] == "5417966051603902038"
+    assert rec["FacilityId"] == 310   # from footer S0310, not the id prefix
+    amts = [i["ItemAmount"] for i in rec["ReceiptLineItems"]]
+    assert -5.00 in amts              # coupon kept as a negative line
+    assert round(sum(amts), 2) == 3.58 == rec["GrandTotal"]
+
+
 def test_forwarded_receipt_is_still_parsed():
     # A forward: From/Subject are the forwarder's, content is the receipt.
     raw = _eml("Fwd: Your Publix receipt.", _TEMPLATE_A, frm="Me <me@example.com>")

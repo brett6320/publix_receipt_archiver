@@ -27,9 +27,10 @@ _SENDER_RE = re.compile(r"@(?:[\w-]+\.)*publix\.com", re.I)
 _SUBJECT_RE = re.compile(r"publix receipt", re.I)
 
 _TAXLET = set("tTMLFPH")
-_AMT_RE = re.compile(r"\d+\.\d{2}")
-# Receipt id: store(4) + 2-3 alphanum + 3 digits + 3 digits, e.g. "1808 B5Q 710 114".
-_RID_PAT = r"\d{4}\s+[0-9A-Za-z]{2,3}\s+\d{3}\s+\d{3}"
+_AMT_RE = re.compile(r"-?\d+\.\d{2}")  # amounts may be negative (e.g. coupon lines)
+# Receipt id: a leading 4-digit group then 3-4 more 3-4 char groups. Covers
+# "1808 B5Q 710 114" and the older all-numeric "5417 9660 5160 3902 038".
+_RID_PAT = r"\d{4}(?:\s+[0-9A-Za-z]{3,4}){3,4}"
 _RID_LABELLED = re.compile(r"Receipt ID:\s*(" + _RID_PAT + r")")
 _RID_BARE = re.compile(r"^(" + _RID_PAT + r")\s*$")
 _DATE = re.compile(r"(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)?", re.I)
@@ -236,10 +237,15 @@ def parse_receipt_text(text: str) -> dict | None:
     order_total = (_find_labelled_amount(text, r"order total")
                    or _find_labelled_amount(text, r"subtotal") or grand)
 
-    facility_id = int(receipt_id[:4]) if receipt_id[:4].isdigit() else 0
+    # Prefer the store number from the footer (S#### / "store ####"); the receipt
+    # id starts with the store only on some templates, so it's a weak fallback.
     m_store = _STORE_NUM.search(text)
-    if m_store and not facility_id:
+    if m_store:
         facility_id = int(m_store.group(1))
+    elif receipt_id[:4].isdigit():
+        facility_id = int(receipt_id[:4])
+    else:
+        facility_id = 0
 
     txn_date = ""
     m_date = _DATE.search(text)

@@ -303,6 +303,87 @@ FIELDS = [
     "discount_ref", "source",
 ]
 
+# Size/unit tokens ignored when matching descriptions across sources (a register
+# name like "AB MILK U ORG 96OZ" vs a catalog name), so quantities don't block a
+# match and word order doesn't matter.
+_UNIT_TOKENS = {"oz", "lb", "lbs", "ct", "cnt", "count", "ea", "each", "pk", "pack",
+                "gal", "ml", "l", "g", "kg", "fl", "qt", "pt", "in", "pc", "pcs"}
+
+
+def _norm_desc(desc) -> str | None:
+    """A normalized token-set key for a description, or None if too generic.
+
+    Lowercases, keeps alphabetic tokens (drops pure numbers and size/unit tokens
+    like "96oz"), and sorts them — so "TOMATO BEEFSTEAK" and "Beefsteak Tomato"
+    share a key. Requires >=2 tokens to avoid over-broad matches."""
+    toks = re.findall(r"[a-z0-9]+", str(desc or "").lower())
+    keep = [t for t in toks
+            if not t.isdigit() and t not in _UNIT_TOKENS
+            and not re.fullmatch(r"\d+[a-z]{1,3}", t)]
+    if len(keep) < 2:
+        return None
+    return " ".join(sorted(keep))
+
+
+def build_number_index(line_items) -> dict[str, str]:
+    """Map normalized description -> item_number from lines that HAVE a number.
+
+    Ambiguous keys (one description → multiple different numbers) are dropped so
+    we never guess."""
+    m: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for it in line_items:
+        num = str(it.get("item_number") or "").strip()
+        if not num or it.get("order_type") == "discount":
+            continue
+        key = _norm_desc(it.get("description"))
+        if not key:
+            continue
+        if key in m and m[key] != num:
+            ambiguous.add(key)
+        else:
+            m[key] = num
+    for k in ambiguous:
+        m.pop(k, None)
+    return m
+
+
+def backfill_item_numbers(raw_dir: Path = config.RAW_DIR) -> dict:
+    """Persist matched item numbers into records that lack them (email receipts).
+
+    Builds the description→number index from every receipt, then writes a matched
+    number into any unnumbered line whose description matches. Idempotent; returns
+    how many lines were filled."""
+    import json as _json
+    records = []
+    all_items = []
+    for f in sorted(Path(raw_dir).glob("*.json")):
+        try:
+            rec = _json.loads(f.read_text())
+        except Exception:
+            continue
+        records.append((f, rec))
+        all_items.extend(_iter_line_items(rec))
+    index = build_number_index(all_items)
+    filled = 0
+    for f, rec in records:
+        prods = _product_index(rec)
+        changed = False
+        for li in rec.get("ReceiptLineItems") or []:
+            if _strip_upc(li.get("ItemCode")):
+                continue  # already numbered
+            desc = product_description(
+                prods.get(_strip_upc(li.get("ItemCode"))),
+                fallback=str(li.get("ItemTypeDescription") or "").strip())
+            key = _norm_desc(desc)
+            if key and key in index:
+                li["ItemCode"] = index[key]
+                changed = True
+                filled += 1
+        if changed:
+            f.write_text(_json.dumps(rec, indent=2))
+    return {"filled": filled}
+
 
 def parse_all(
     raw_dir: Path = config.RAW_DIR,
@@ -314,6 +395,15 @@ def parse_all(
     line_items: list[dict] = []
     for r in receipts:
         line_items.extend(_iter_line_items(r))
+
+    # Fill missing item numbers (email receipts carry none) by matching their
+    # description to items with a known number.
+    index = build_number_index(line_items)
+    for it in line_items:
+        if not it["item_number"]:
+            key = _norm_desc(it["description"])
+            if key and key in index:
+                it["item_number"] = index[key]
 
     line_items.sort(key=lambda x: (x["date"], x["receipt_id"], x["item_number"]), reverse=True)
 
