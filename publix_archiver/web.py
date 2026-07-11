@@ -571,8 +571,14 @@ class _Handler(BaseHTTPRequestHandler):
             # store can appear under several name spellings.
             wh_nums = {r.get("store_number", "") for r in self.rows if r.get("store_number")}
             dates = sorted({r.get("date", "") for r in self.rows if r.get("date")})
+            # Distinct item numbers actually purchased (ignore discount rows,
+            # which reuse the item's number for their reference).
+            item_nums = {str(r.get("item_number", "")).strip() for r in self.rows
+                         if str(r.get("item_number", "")).strip()
+                         and str(r.get("order_type", "")) != "discount"}
             meta = {
                 "total_line_items": len(self.rows),
+                "unique_items": len(item_nums),
                 "warehouses": warehouses,
                 "warehouse_count": len(wh_nums) if wh_nums else len(warehouses),
                 "date_min": dates[0] if dates else "",
@@ -1763,7 +1769,8 @@ function exportExcel(){
 async function loadMeta(){
   const m = await (await api("/api/meta")).json();
   const whn = (m.warehouse_count!=null ? m.warehouse_count : m.warehouses.length);
-  $("meta").textContent = `${m.total_line_items.toLocaleString()} line items · ${m.date_min||"?"} → ${m.date_max||"?"} · ${whn} store${whn===1?'':'s'}`;
+  const uniq = (m.unique_items!=null ? m.unique_items : 0);
+  $("meta").textContent = `${m.total_line_items.toLocaleString()} line items · ${uniq.toLocaleString()} unique items · ${m.date_min||"?"} → ${m.date_max||"?"} · ${whn} store${whn===1?'':'s'}`;
 }
 async function loadWhoami(){
   try{
