@@ -876,7 +876,9 @@ _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   <!-- ============ COLLECT ============ -->
   <div id="view-collect" class="hidden">
     <div class="card">
-      <h2>1 · Capture credentials (import-curl)</h2>
+      <h2>1 · Capture credentials (import-curl)
+        <a class="pdf" style="font-size:12px;font-weight:normal" target="_blank" rel="noopener"
+           href="https://github.com/brett6320/publix_receipt_archiver/blob/main/docs/QUICKSTART.md">📖 step-by-step guide</a></h2>
       <ol class="steps">
         <li>In your <b>normal browser</b>, sign in at <code>publix.com</code> and open <b>Account → Purchases</b>.</li>
         <li>Open <b>DevTools</b> (F12 / ⌥⌘I) → <b>Network</b> tab. In the filter box type <code>PurchaseHistory</code>.</li>

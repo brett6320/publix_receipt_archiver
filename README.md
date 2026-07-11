@@ -81,6 +81,10 @@ persists in `./data` via a mounted volume.
 
 ## 🔑 Getting credentials — `import-curl` (recommended)
 
+> 📖 **New here? Follow the [Quickstart guide](docs/QUICKSTART.md)** — a
+> step-by-step walkthrough of copying the request from your browser and pasting
+> it into the **Collect** page.
+
 The most reliable way to authorize the API is to copy one real request from your
 own logged-in browser:
 
