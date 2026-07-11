@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright
 from . import config
 from .parse import (STORE_KINDS, order_type, product_description, line_quantity,
                     receipt_totals, store_name, tax_code_label, item_tax_codes,
-                    _num, _receipt_date, _strip_upc, _product_index)
+                    line_amounts, _num, _receipt_date, _strip_upc, _product_index)
 
 # Chromium stamps each PDF with a wall-clock /CreationDate and /ModDate, so two
 # renders of identical content differ only in those bytes. Blank them out before
@@ -95,13 +95,13 @@ def _receipt_html(r: dict) -> str:
             f"<td class='c'>{code_cell}</td>"
             "</tr>"
         )
-        saving = _num(li.get("SavingAmount"))
-        if saving:
+        _printed, inline_discount, _paid = line_amounts(li)
+        if inline_discount > 0:
             rows.append(
                 "<tr class='disc'>"
                 f"<td>↳ Savings</td>"
                 f"<td class='r'></td><td class='r'></td>"
-                f"<td class='r'>-{_fmt_money(saving)}</td>"
+                f"<td class='r'>-{_fmt_money(inline_discount)}</td>"
                 f"<td class='c'></td>"
                 "</tr>"
             )

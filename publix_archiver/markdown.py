@@ -20,7 +20,8 @@ from pathlib import Path
 from . import config
 from .parse import (STORE_KINDS, _load_receipts, _receipt_date, _num, order_type,
                     product_description, line_quantity, receipt_totals, store_name,
-                    tax_code_label, item_tax_codes, _strip_upc, _product_index)
+                    tax_code_label, item_tax_codes, line_amounts, _strip_upc,
+                    _product_index)
 
 _TYPE_ICON = {"store": "🛒 Store", "pharmacy": "💊 Pharmacy",
               "greenwise": "🌿 GreenWise", "discount": "🏷 Discount"}
@@ -99,9 +100,9 @@ def _receipt_page(r: dict) -> str:
         detail = _product_link(prod, desc)
         code = line_tax[i] if i < len(line_tax) else ""
         lines.append(f"| {desc or upc or 'Item'} | {qty_s} | {_money(li.get('ItemPrice'))} | {amount} | {code} | {detail} |")
-        saving = _num(li.get("SavingAmount"))
-        if saving:
-            lines.append(f"| ↳ Savings | | | -{_money(saving)} | | |")
+        _printed, inline_discount, _paid = line_amounts(li)
+        if inline_discount > 0:
+            lines.append(f"| ↳ Savings | | | -{_money(inline_discount)} | | |")
 
     lines += [
         "",

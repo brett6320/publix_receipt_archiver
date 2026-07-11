@@ -164,6 +164,26 @@ def line_quantity(li: dict) -> float:
     return qty or _num(li.get("MSUQty")) or 1
 
 
+def line_amounts(li: dict) -> tuple[float, float, float]:
+    """(printed, discount, paid) for one receipt line.
+
+    - ``printed`` = ItemAmount, the amount the receipt prints on the line.
+    - ``paid``    = NetAmount, what the line actually contributed to the total
+      (0 for a free BOGO item). Sum of ``paid`` over all lines == GrandTotal.
+    - ``discount`` = printed − paid, the money removed on that line at the
+      register (e.g. a BOGO promotion). This is NOT the same as ``SavingAmount``
+      (savings vs the *regular* price), which for a special-price item is already
+      reflected in the printed amount and must not be subtracted again.
+    """
+    printed = _num(li.get("ItemAmount"))
+    net = li.get("NetAmount")
+    paid = _num(net) if net is not None else round(printed - _num(li.get("SavingAmount")), 2)
+    discount = round(printed - paid, 2)
+    if discount < 0:  # printed shouldn't be below paid; guard against odd data
+        discount, paid = 0.0, printed
+    return printed, discount, paid
+
+
 def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
     date = _receipt_date(receipt)
     store = store_name(receipt)
@@ -177,9 +197,10 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
         upc = _strip_upc(li.get("ItemCode"))
         prod = prods.get(upc)
         desc = product_description(prod, fallback=str(li.get("ItemTypeDescription") or "").strip())
-        amount = _num(li.get("NetAmount"))
-        if not amount:
-            amount = round(_num(li.get("ItemAmount")) - _num(li.get("SavingAmount")), 2)
+        # Show the printed line amount; a register-level deduction (BOGO promo)
+        # becomes its own discount row below so the two net to what was paid.
+        printed, inline_discount, _paid = line_amounts(li)
+        amount = printed
         base = {
             "date": date,
             "item_number": upc,
@@ -202,13 +223,12 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
 
         # A per-line saving becomes its own nested 'discount' row so the UI can
         # group it directly under the item it applies to.
-        saving = _num(li.get("SavingAmount"))
-        if saving:
+        if inline_discount > 0:
             yield {**base,
                    "description": f"Savings → {desc}" if desc else "Savings",
                    "unit_qty": 1,
-                   "unit_price": -saving,
-                   "amount": -saving,
+                   "unit_price": -inline_discount,
+                   "amount": -inline_discount,
                    "tax_flag": "",  # a savings line carries no tax code
                    "tax_exempt": "",
                    "order_type": "discount",
@@ -257,7 +277,13 @@ def receipt_totals(r: dict) -> dict:
     """Header-level money for one receipt."""
     total = _num(r.get("GrandTotal") or r.get("Amount"))
     tax = _num(r.get("TaxAmount"))
-    savings = round(_num(r.get("VendorCouponAmount")) + _num(r.get("StoreCouponAmount")), 2)
+    # Total savings = every line's SavingAmount (vs the regular price) — this is
+    # Publix's "Your Savings at Publix" figure, and covers both BOGO promotions
+    # and special prices. Fall back to the coupon fields if lines lack it.
+    line_savings = round(sum(_num(li.get("SavingAmount"))
+                             for li in r.get("ReceiptLineItems") or []), 2)
+    savings = line_savings or round(
+        _num(r.get("VendorCouponAmount")) + _num(r.get("StoreCouponAmount")), 2)
     subtotal = round(total - tax, 2)
     items = r.get("ItemCount") or len(r.get("ReceiptLineItems") or [])
     return {"subtotal": subtotal, "taxes": tax, "total": total,
@@ -293,27 +319,29 @@ def parse_all(
         w.writerows(line_items)
 
     # --- items_deduped.csv : aggregate by item ---
+    # total_spent is the NET spend: a discount row (negative amount) nets against
+    # the item it belongs to, so a free BOGO item aggregates to $0 spent — but
+    # still counts as one purchase at its regular unit price.
     agg: dict[str, dict] = {}
     for it in line_items:
-        if it["order_type"] == "discount":
-            continue  # don't aggregate savings rows as products
         num = it["item_number"] or f"NONUM::{it['description']}"
-        a = agg.setdefault(
-            num,
-            {
+        a = agg.get(num)
+        if a is None:
+            a = agg[num] = {
                 "item_number": it["item_number"],
-                "description": it["description"],
+                "description": "" if it["order_type"] == "discount" else it["description"],
                 "times_purchased": 0,
                 "total_qty": 0.0,
                 "total_spent": 0.0,
                 "first_purchase": it["date"],
                 "last_purchase": it["date"],
                 "last_price": it["unit_price"] or it["amount"],
-            },
-        )
+            }
+        a["total_spent"] = round(a["total_spent"] + it["amount"], 2)
+        if it["order_type"] == "discount":
+            continue  # netted above; not a distinct purchase
         a["times_purchased"] += 1
         a["total_qty"] = round(a["total_qty"] + (it["unit_qty"] or 1), 3)
-        a["total_spent"] = round(a["total_spent"] + it["amount"], 2)
         if it["date"] and it["date"] < a["first_purchase"]:
             a["first_purchase"] = it["date"]
         if it["date"] and it["date"] >= a["last_purchase"]:
