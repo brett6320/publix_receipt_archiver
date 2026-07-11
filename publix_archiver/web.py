@@ -181,6 +181,11 @@ def _run_reprocess(do_pdf: bool):
         bf = backfill_item_numbers(config.RAW_DIR)
         if bf.get("filled"):
             _log(f"Filled {bf['filled']} missing item number(s) by description match.")
+        # Overwrite older imports whose ReceiptText leaked email headers/footer.
+        from .email_ingest import repair_receipt_text
+        rr = repair_receipt_text(config.RAW_DIR)
+        if rr.get("repaired"):
+            _log(f"Cleaned email cruft from {rr['repaired']} stored receipt(s).")
         n_raw = len(list(config.RAW_DIR.glob("*.json")))
         _set_job(state="parsing", message="Rebuilding outputs…",
                  done=0, total=1, saved=n_raw, error=None, summary=None)
