@@ -6,8 +6,9 @@
 // Cloudflare Queue. The self-hosted archiver is the queue's pull consumer.
 
 const PUBLIX_RE = /publix/i;
-// A Publix register receipt id: store(4) + 2-3 alnum + 3 digits + 3 digits.
-const RECEIPT_ID_RE = /(Receipt ID:|\b\d{4}\s+[0-9A-Za-z]{2,3}\s+\d{3}\s+\d{3}\b)/;
+// A Publix register receipt id: "Receipt ID:" label, or a 4-digit group followed
+// by 3-4 more 3-4 char groups (covers "1808 B5Q 710 114" and "5417 9660 5160 3902 038").
+const RECEIPT_ID_RE = /(Receipt ID:|\b\d{4}(?:\s+[0-9A-Za-z]{3,4}){3,4}\b)/;
 const TOTAL_RE = /(Grand Total|(^|\n)\s*Total\s+\$?\d+\.\d{2})/i;
 
 // Basic filter: discard anything that isn't a Publix receipt. The archiver

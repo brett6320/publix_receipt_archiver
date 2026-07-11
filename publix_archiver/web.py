@@ -176,6 +176,11 @@ def _run_reprocess(do_pdf: bool):
         # Repair any receipts still saved under the old list-key filename so the
         # PDF/markdown links (which use the detail ReceiptId) resolve.
         _index_existing(config.RAW_DIR)
+        # Backfill missing item numbers (email receipts) by description match.
+        from .parse import backfill_item_numbers
+        bf = backfill_item_numbers(config.RAW_DIR)
+        if bf.get("filled"):
+            _log(f"Filled {bf['filled']} missing item number(s) by description match.")
         n_raw = len(list(config.RAW_DIR.glob("*.json")))
         _set_job(state="parsing", message="Rebuilding outputs…",
                  done=0, total=1, saved=n_raw, error=None, summary=None)
