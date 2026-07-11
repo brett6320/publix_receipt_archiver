@@ -59,9 +59,16 @@ reject everyone. See [Web login](#web-login-authentication--mfa).
 ### Docker
 
 ```bash
+cp .env.example .env                  # optional: set PORT and (for email) R2/Queue
 docker compose up --build             # http://localhost:8000
 PORT=9000 docker compose up --build   # or any port
 ```
+
+Two images are published to GHCR on merge (multi-arch, native runners): the web
+app `ghcr.io/brett6320/publix_receipt_archiver` and the slim email poller
+`ghcr.io/brett6320/publix_receipt_archiver/poller` (no Chromium). The
+`email-poller` compose service uses the pre-built poller image; see
+[Email ingestion](#email-ingestion-cloudflare).
 
 Create a login before you sign in (the container serves the same auth-gated UI):
 
@@ -174,7 +181,9 @@ python -m publix_archiver email-pull --loop --interval 120
 python -m publix_archiver import-eml path/to/receipt.eml   # or ingest local .eml files
 ```
 
-Or run the bundled poller container: `docker compose --profile email up -d email-poller`.
+Or run the bundled poller container (pre-built slim image, no Chromium):
+`docker compose --profile email up -d email-poller` — set the R2/Queue values in
+`.env` (see `.env.example`) or the admin UI.
 Admins can also **Poll now** from the UI.
 
 ### Admin actions

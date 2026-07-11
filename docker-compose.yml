@@ -14,13 +14,12 @@ services:
 
   # Email ingestion poller: pulls forwarded Publix receipts from the Cloudflare
   # queue (see cloudflare/README.md), ingests them, and deletes on success.
-  # Shares ./data with `web`, so it also honors settings saved in the admin UI
+  # Uses the pre-built, published slim poller image (no Chromium). Shares ./data
+  # with `web`, so it also honors settings saved in the admin UI
   # (data/email_config.json). Runs only under the `email` profile.
   email-poller:
-    build: .
-    image: publix-receipt-archiver
+    image: ghcr.io/brett6320/publix_receipt_archiver/poller:${IMAGE_TAG:-latest}
     profiles: ["email"]
-    command: ["python", "-m", "publix_archiver", "email-pull", "--loop"]
     environment:
       # These are optional if you configure email ingestion in the admin UI.
       PUBLIX_EMAIL_POLL_INTERVAL: ${PUBLIX_EMAIL_POLL_INTERVAL:-300}

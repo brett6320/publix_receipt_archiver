@@ -1,10 +1,11 @@
 name: docker-publish
 
 # Build multi-arch container images on NATIVE runners (no QEMU emulation):
-# amd64 on ubuntu-24.04, arm64 on ubuntu-24.04-arm. Each arch is built and
-# pushed by digest, then a single manifest list is assembled. Images are only
-# pushed to GHCR on merge to main; pull requests build (to validate) but do not
-# push.
+# amd64 on ubuntu-24.04, arm64 on ubuntu-24.04-arm. Two images are built — the
+# web app (with Chromium for PDFs) and the slim email-ingestion poller — each
+# built + pushed by digest per arch, then assembled into a per-image manifest
+# list. Images are only pushed to GHCR on merge to main; pull requests build (to
+# validate) but do not push.
 
 on:
   push:
@@ -13,24 +14,30 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch.runner }}
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux/amd64
+        image:
+          - key: web
+            suffix: ""
+            dockerfile: Dockerfile
+          - key: poller
+            suffix: /poller
+            dockerfile: Dockerfile.poller
+        arch:
+          - id: amd64
+            platform: linux/amd64
             runner: ubuntu-24.04
-            arch: amd64
-          - platform: linux/arm64
+          - id: arm64
+            platform: linux/arm64
             runner: ubuntu-24.04-arm
-            arch: arm64
     steps:
       - uses: actions/checkout@v5
 
@@ -49,18 +56,19 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image.suffix }}
 
-      - name: Build ${{ matrix.arch }} and push by digest
+      - name: Build ${{ matrix.image.key }} (${{ matrix.arch.id }}) and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: ${{ matrix.platform }}
+          file: ${{ matrix.image.dockerfile }}
+          platforms: ${{ matrix.arch.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=${{ matrix.image.key }}-${{ matrix.arch.id }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.key }}-${{ matrix.arch.id }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image.suffix }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -73,25 +81,31 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.arch }}
+          name: digests-${{ matrix.image.key }}-${{ matrix.arch.id }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
-    # Assemble the manifest list from the per-arch digests. Push only on merge.
+    # Assemble a manifest list per image from its per-arch digests. Push on merge.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     needs: build
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { key: web, suffix: "" }
+          - { key: poller, suffix: /poller }
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-${{ matrix.image.key }}-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -101,7 +115,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image.suffix }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=long
@@ -118,7 +132,7 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+            $(printf '${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image.suffix }}@sha256:%s ' *)
 
       - name: Inspect image
-        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image.suffix }}:latest

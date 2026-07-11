@@ -1,0 +1,6 @@
+# Dependencies for the email-ingestion poller image only. It pulls the
+# Cloudflare queue, fetches R2 objects, parses receipt emails, and writes CSVs /
+# Markdown — no browser automation, so Playwright/Chromium are intentionally
+# omitted (keeps the image small).
+httpx[http2]>=0.27
+boto3>=1.34
