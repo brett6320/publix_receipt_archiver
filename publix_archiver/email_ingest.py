@@ -422,11 +422,58 @@ def parse_eml(raw: bytes | str) -> dict | None:
     return recs[0] if recs else None
 
 
+def _merge_enrichments(old: dict, new: dict) -> dict:
+    """A fresh parse (new), but carry over enrichments post-processing added to
+    the stored copy so re-importing never loses them: the product catalog and
+    backfilled item numbers (matched line-by-line when the item count matches)."""
+    merged = dict(new)
+    if old.get("Products") and not merged.get("Products"):
+        merged["Products"] = old["Products"]
+    old_items = old.get("ReceiptLineItems") or []
+    new_items = merged.get("ReceiptLineItems") or []
+    if len(old_items) == len(new_items):
+        from .parse import _strip_upc
+        for oi, ni in zip(old_items, new_items):
+            if not _strip_upc(ni.get("ItemCode")) and str(oi.get("ItemCode") or "").strip():
+                ni["ItemCode"] = oi["ItemCode"]
+    return merged
+
+
+def _store_receipt(raw_dir: Path, rec: dict, existing: set) -> str:
+    """Persist rec, returning 'saved' (new), 'updated' (a duplicate whose parsed
+    output differed — so re-submitting backfills mangled data) or 'skipped'.
+
+    A duplicate updates the stored record only when the parse actually changed,
+    never lets a plain email record clobber a richer API import, and preserves
+    enrichments (catalog + backfilled numbers) so an unchanged re-import is a
+    no-op (idempotent)."""
+    import json
+    key = _safe_key_for(rec)
+    path = raw_dir / f"{key}.json"
+    if key not in existing:
+        path.write_text(json.dumps(rec, indent=2))
+        existing.add(key)
+        return "saved"
+    try:
+        old = json.loads(path.read_text())
+    except Exception:
+        old = None
+    if not isinstance(old, dict):
+        path.write_text(json.dumps(rec, indent=2))
+        return "updated"
+    # Don't downgrade a richer (API) record with a plain email re-import.
+    if old.get("Source") != "email" and rec.get("Source") == "email":
+        return "skipped"
+    merged = _merge_enrichments(old, rec)
+    if merged == old:
+        return "skipped"
+    path.write_text(json.dumps(merged, indent=2))
+    return "updated"
+
+
 def ingest_eml_paths(paths, raw_dir: Path = config.RAW_DIR) -> dict:
     """Ingest .eml files/dirs. Every receipt in each file (including attached
     emails) is saved; non-receipt attachments are ignored. Deduped by key."""
-    import json
-    from .fetch import _safe_key
     config.ensure_dirs()
     files: list[Path] = []
     for p in paths:
@@ -436,21 +483,18 @@ def ingest_eml_paths(paths, raw_dir: Path = config.RAW_DIR) -> dict:
         elif p.suffix.lower() == ".eml":
             files.append(p)
     existing = {f.stem for f in raw_dir.glob("*.json")}
-    saved = skipped = ignored = 0
+    saved = updated = skipped = ignored = 0
     for f in files:
         recs = parse_receipts(f.read_bytes())
         if not recs:
             ignored += 1
             continue
         for rec in recs:
-            key = _safe_key(rec)
-            if key in existing:
-                skipped += 1
-                continue
-            (raw_dir / f"{key}.json").write_text(json.dumps(rec, indent=2))
-            existing.add(key)
-            saved += 1
-    return {"files": len(files), "saved": saved,
+            result = _store_receipt(raw_dir, rec, existing)
+            saved += result == "saved"
+            updated += result == "updated"
+            skipped += result == "skipped"
+    return {"files": len(files), "saved": saved, "updated": updated,
             "skipped_existing": skipped, "ignored_non_receipt": ignored}
 
 
@@ -495,7 +539,7 @@ def _drain_bucket(r2, bucket: str, prefix: str, raw_dir: Path, existing: set,
     """Ingest and (optionally) delete EVERY object under the prefix in the
     bucket. Deduped by ReceiptId. Returns per-object counters."""
     import json
-    objects = saved = skipped = ignored = deleted = failed = 0
+    objects = saved = updated = skipped = ignored = deleted = failed = 0
     token = None
     while True:
         kw = {"Bucket": bucket, "Prefix": prefix}
@@ -513,13 +557,10 @@ def _drain_bucket(r2, bucket: str, prefix: str, raw_dir: Path, existing: set,
                 if not recs:
                     ignored += 1
                 for rec in recs:
-                    rkey = _safe_key_for(rec)
-                    if rkey in existing:
-                        skipped += 1
-                    else:
-                        (raw_dir / f"{rkey}.json").write_text(json.dumps(rec, indent=2))
-                        existing.add(rkey)
-                        saved += 1
+                    result = _store_receipt(raw_dir, rec, existing)
+                    saved += result == "saved"
+                    updated += result == "updated"
+                    skipped += result == "skipped"
                 if delete:
                     r2.delete_object(Bucket=bucket, Key=key)
                     deleted += 1
@@ -529,8 +570,9 @@ def _drain_bucket(r2, bucket: str, prefix: str, raw_dir: Path, existing: set,
         if not lst.get("IsTruncated"):
             break
         token = lst.get("NextContinuationToken")
-    return {"objects_seen": objects, "saved": saved, "skipped_existing": skipped,
-            "ignored_non_receipt": ignored, "deleted": deleted, "failed": failed}
+    return {"objects_seen": objects, "saved": saved, "updated": updated,
+            "skipped_existing": skipped, "ignored_non_receipt": ignored,
+            "deleted": deleted, "failed": failed}
 
 
 def pull_from_queue(raw_dir: Path = config.RAW_DIR, delete: bool = True,
@@ -568,7 +610,7 @@ def pull_from_queue(raw_dir: Path = config.RAW_DIR, delete: bool = True,
         leases += [m["lease_id"] for m in msgs if m.get("lease_id")]
 
     # 2) On any trigger, drain the whole bucket.
-    counts = {"objects_seen": 0, "saved": 0, "skipped_existing": 0,
+    counts = {"objects_seen": 0, "saved": 0, "updated": 0, "skipped_existing": 0,
               "ignored_non_receipt": 0, "deleted": 0, "failed": 0}
     if leases:
         counts = _drain_bucket(r2, bucket, prefix, raw_dir, existing, delete)

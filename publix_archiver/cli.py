@@ -335,7 +335,7 @@ def cmd_email_pull(args) -> None:
                       flush=True)
             else:
                 summary = email_ingest.pull_from_queue(delete=not args.keep)
-                if summary.get("saved"):
+                if summary.get("saved") or summary.get("updated"):
                     parse_all()
                     generate_markdown()
                 print(json.dumps(summary), flush=True)
