@@ -9,3 +9,7 @@ httpx[http2]>=0.27
 # S3-compatible client for Cloudflare R2 — only needed for email ingestion
 # (publix_archiver.email_ingest); imported lazily so the core runs without it.
 boto3>=1.34
+
+# Barcode generation (Code 128 SVG) for receipts that ship no barcode
+# image, e.g. email receipts. Pure Python (no Pillow).
+python-barcode>=0.15

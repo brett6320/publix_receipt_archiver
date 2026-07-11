@@ -119,8 +119,10 @@ def _receipt_html(r: dict) -> str:
     tender_block = ("<tr class='sec'><td colspan=5>Payment</td></tr>" + "".join(tender_rows)
                     if tender_rows else "")
 
-    # Ready-made barcode image (data-URI) — embed directly.
-    barcode = str(r.get("BarcodeSrc") or "").strip()
+    # Barcode: the API's ready-made image, or one generated from the ReceiptId
+    # (email receipts don't include a barcode).
+    from .barcode_util import barcode_for
+    barcode = barcode_for(r)
     barcode_block = (f"<div class='barcode'><img src='{html.escape(barcode, quote=True)}'"
                      f" alt='receipt barcode'></div>" if barcode.startswith("data:") else "")
     rid = str(r.get("ReceiptId") or "")

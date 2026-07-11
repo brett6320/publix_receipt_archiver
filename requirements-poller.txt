@@ -4,3 +4,6 @@
 # omitted (keeps the image small).
 httpx[http2]>=0.27
 boto3>=1.34
+
+# Barcode generation for email receipts (pure Python, no Pillow).
+python-barcode>=0.15

@@ -71,7 +71,8 @@ def _receipt_page(r: dict) -> str:
         "[← Back to index](../index.md)",
         "",
     ]
-    barcode = str(r.get("BarcodeSrc") or "").strip()
+    from .barcode_util import barcode_for
+    barcode = barcode_for(r)   # API image, or generated from ReceiptId (email)
     if barcode.startswith("data:"):
         lines += [f'<img src="{barcode}" alt="receipt barcode" height="56">', ""]
 
