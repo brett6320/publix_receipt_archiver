@@ -1712,7 +1712,13 @@ async function delItemMap(desc){
   }catch(e){}
 }
 function assignItemNumber(desc){
-  const n = prompt("Item number for:\n"+desc); if(n && n.trim()) addItemMap(desc, n.trim());
+  // Carry the clicked item's name into the "add mapping" form and focus the
+  // number field, so the admin only types the number.
+  showTab('collect');
+  const d=$("im_desc"); if(d) d.value = desc;
+  const n=$("im_num"); if(n){ n.value=""; n.focus(); }
+  const card=$("itemMapCard"); if(card) card.scrollIntoView({behavior:"smooth", block:"center"});
+  const m=$("itemMapMsg"); if(m) m.textContent = "Enter the item number and click Add mapping.";
 }
 async function deleteReceipt(rid){
   if(!confirm("Delete receipt "+rid+"?\nThis removes its data, PDF and Markdown. This cannot be undone.")) return;
