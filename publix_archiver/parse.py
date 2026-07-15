@@ -135,12 +135,19 @@ def _clean_desc(s) -> str:
 
 
 def _product_index(receipt: dict) -> dict[str, dict]:
-    """Map normalized UPC -> product catalog entry (name, urls, image)."""
+    """Map normalized UPC -> product catalog entry (name, urls, image).
+
+    ReceiptLineItems.ItemCode is usually the UPC, but some receipts carry the
+    catalog ItemId instead (same digits-only shape) — index by both so the
+    join finds the product either way."""
     idx: dict[str, dict] = {}
     for p in receipt.get("Products") or []:
         upc = _strip_upc(p.get("UPC"))
         if upc:
             idx.setdefault(upc, p)
+        item_id = _strip_upc(p.get("ItemId"))
+        if item_id:
+            idx.setdefault(item_id, p)
     return idx
 
 
@@ -203,6 +210,11 @@ def _iter_line_items(receipt: dict, source: str = "publix") -> Iterable[dict]:
     for idx, li in enumerate(receipt.get("ReceiptLineItems") or []):
         upc = _strip_upc(li.get("ItemCode"))
         prod = prods.get(upc)
+        # Canonicalize on the product's own UPC (ItemCode is sometimes the
+        # catalog ItemId instead), so the same product dedupes the same way
+        # across receipts regardless of which code Publix sent.
+        if prod:
+            upc = _strip_upc(prod.get("UPC")) or upc
         desc = product_description(prod, fallback=str(li.get("ItemTypeDescription") or "").strip())
         # Show the printed line amount; a register-level deduction (BOGO promo)
         # becomes its own discount row below so the two net to what was paid.
