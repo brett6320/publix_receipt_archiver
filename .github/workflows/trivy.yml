@@ -4,9 +4,14 @@ name: trivy
 #   deps  - known-CVE Python packages in requirements.txt. Fast, no Docker;
 #           runs on every push/PR and fails the job on HIGH/CRITICAL.
 #   image - OS + package CVEs in the published GHCR images (web app w/
-#           Chromium, and the slim poller). Advisory only (doesn't block
-#           anything) since it scans what's already live, on a weekly cadence
-#           plus manual dispatch. Results land in the repo's Security tab.
+#           Chromium, and the slim poller). Gating: fails on HIGH/CRITICAL, on
+#           a weekly cadence plus manual dispatch and every push to main.
+#           NOTE: this scans the already-pushed `:latest` tag after
+#           docker-publish.yml has published it (they run in parallel on
+#           push), so a failure here doesn't block that publish — it flags
+#           the image as bad after the fact. Gating the publish itself would
+#           mean scanning the freshly-built image before push, which needs
+#           docker-publish.yml restructured to build+load locally first.
 
 on:
   push:
@@ -66,7 +71,7 @@ jobs:
           format: sarif
           output: trivy-${{ matrix.image.key }}.sarif
           severity: HIGH,CRITICAL
-          exit-code: "0" # advisory — report, don't fail the build
+          exit-code: "1"
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
