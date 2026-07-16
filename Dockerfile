@@ -8,6 +8,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Pull current Debian security patches before installing anything else — the
+# base image's baked apt index can lag behind fixes already published
+# upstream (xorg/mesa/util-linux/perl/tar CVEs otherwise ride along unpatched).
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # Install Python deps, then the Chromium browser + its system libraries.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
