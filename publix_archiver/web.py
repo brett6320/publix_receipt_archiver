@@ -88,6 +88,59 @@ def _refresh_one(receipt_id: str, do_pdf: bool) -> dict:
             "markdown": md_ok, "pdf": pdf_ok}
 
 
+def _force_refetch_one(receipt_id: str, do_pdf: bool) -> dict:
+    """Admin action: re-fetch one receipt's detail live from Publix, overwrite
+    the stored raw JSON, and regenerate its Markdown/PDF. Unlike `_refresh_one`
+    (which only rebuilds from what's already on disk), this hits the live API —
+    use it when Publix may have silently corrected a receipt Publix already
+    published in full (the normal `fetch` skips already-saved, non-placeholder
+    receipts and would never notice)."""
+    key = _raw_key_for(receipt_id)
+    if not key:
+        return {"ok": False, "error": f"receipt {receipt_id} not found on disk"}
+    try:
+        record = json.loads((config.RAW_DIR / f"{key}.json").read_text())
+    except Exception:
+        record = {}
+    if record.get("Source") == "email":
+        return {"ok": False, "error": "This receipt was imported from email — "
+                "there's no Publix API transaction to re-fetch."}
+    transaction_key = record.get("TransactionKey")
+    if not transaction_key:
+        return {"ok": False, "error": "No TransactionKey on this receipt — can't re-fetch it."}
+
+    creds = _load_creds()
+    if creds is None:
+        return {"ok": False, "error": "No credentials — capture a cURL first."}
+    from .auth import token_is_expired
+    if token_is_expired(creds.id_token):
+        return {"ok": False, "error": "Token expired (they last ~1 hour). Re-capture a fresh cURL."}
+
+    from .fetch import refresh_one_receipt
+    try:
+        result = refresh_one_receipt(creds, transaction_key, key)
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
+    if result["status"] == "deferred":
+        _Handler.rows = _load_rows()
+        return {"ok": True, "receipt_id": receipt_id, "key": key, "deferred": True,
+                "message": "Publix still hasn't published the real detail — "
+                "removed; will re-import on the next collection run."}
+
+    from .parse import parse_all
+    from .markdown import generate_one
+    parse_all()
+    md_ok = generate_one(key)
+    pdf_ok = False
+    if do_pdf:
+        from .pdf import render_one_pdf
+        pdf_ok = render_one_pdf(key)
+    _Handler.rows = _load_rows()
+    return {"ok": True, "receipt_id": receipt_id, "key": key,
+            "refetched": True, "markdown": md_ok, "pdf": pdf_ok}
+
+
 def _load_creds():
     from .auth import Credentials
     f = config.CRED_CACHE_FILE
@@ -845,6 +898,19 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(result).encode())
             except Exception as ex:
                 self._send(500, json.dumps({"error": str(ex)}).encode())
+        elif path == "/api/receipts/refetch":
+            if not self._require_admin():
+                return
+            body = self._read_json()
+            rid = str(body.get("receipt_id", "")).strip()
+            if not rid:
+                self._send(400, json.dumps({"error": "receipt_id required"}).encode())
+                return
+            try:
+                result = _force_refetch_one(rid, bool(body.get("render_pdf", True)))
+                self._send(200 if result.get("ok") else 400, json.dumps(result).encode())
+            except Exception as ex:
+                self._send(500, json.dumps({"error": str(ex)}).encode())
         elif path == "/api/receipts/delete":
             if not self._require_admin():
                 return
@@ -1413,6 +1479,20 @@ async function refreshOne(receiptId, el){
   }catch(e){ el.textContent = "✗"; el.title = String(e); }
   setTimeout(()=>{ el.textContent = prev; el.style.pointerEvents=""; }, 2500);
 }
+async function forceRefetch(receiptId, el){
+  if(!confirm("Force a fresh pull of this receipt from Publix? This calls the live API now."))
+    return;
+  const prev = el.textContent; el.textContent = "⏳"; el.style.pointerEvents="none";
+  try{
+    const r = await fetch("/api/receipts/refetch",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({receipt_id: receiptId, render_pdf: true})});
+    const d = await r.json();
+    el.textContent = (r.ok && d.ok) ? "✓" : "✗";
+    el.title = (r.ok && d.ok) ? (d.deferred ? d.message : "Re-fetched from Publix") : (d.error || "Failed");
+    if(r.ok && d.ok) run();  // reload results — description/products may have changed
+  }catch(e){ el.textContent = "✗"; el.title = String(e); }
+  setTimeout(()=>{ el.textContent = prev; el.style.pointerEvents=""; }, 4000);
+}
 async function reprocess(){
   const rb=$("reprocessBtn"); if(rb) rb.disabled=true;
   const m=$("reprocessMsg"); if(m){ m.className="msg"; m.textContent="Refreshing…"; }
@@ -1613,6 +1693,7 @@ async function run(){
   const receiptCell = v => `<a class="pdf" href="/pdf/${encodeURIComponent(v)}" target="_blank" rel="noopener">${v.slice(0,10)}…</a> `
     + fltBtns('rcpt', v, 'this order')
     + ` <span class="rfr" title="Refresh this receipt's PDF, barcode & Markdown" onclick="refreshOne('${v}', this)">↻</span>`
+    + (window.IS_ADMIN ? ` <span class="rowdel" title="Force a fresh pull of this receipt from Publix (admin)" onclick="forceRefetch('${v}', this)">⟳</span>` : "")
     + (window.IS_ADMIN ? ` <span class="rowdel" title="Delete this receipt (admin)" onclick="deleteReceipt('${v}')">🗑</span>` : "");
   const cell = (r,k,num) => {
     let v = r[k];

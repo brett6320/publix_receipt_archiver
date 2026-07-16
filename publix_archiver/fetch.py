@@ -105,14 +105,25 @@ def refresh_one_receipt(
     receipt_key: str,
     raw_dir: Path = config.RAW_DIR,
 ) -> dict:
-    """Re-fetch a single receipt's detail and overwrite it. If the detail is
-    still an unpublished placeholder, delete the stored receipt so it is
-    re-imported on a later run. Returns {status, key}."""
+    """Re-fetch a single receipt's detail live from Publix and overwrite it.
+
+    If the detail is still an unpublished placeholder, delete the stored
+    receipt so it is re-imported on a later run. Preserves `_list_key` (used
+    by incremental `fetch` runs to skip already-imported receipts) across the
+    overwrite. Returns {status, key}."""
     config.ensure_dirs()
+    path = raw_dir / f"{receipt_key}.json"
+    list_key = None
+    if path.exists():
+        try:
+            list_key = json.loads(path.read_text()).get("_list_key")
+        except Exception:
+            pass
     with PublixAPI(creds) as api:
         detail = api.transaction_detail(transaction_key) if transaction_key else {}
     record = merge_detail({"TransactionKey": transaction_key}, detail)
-    path = raw_dir / f"{receipt_key}.json"
+    if list_key:
+        record.setdefault("_list_key", list_key)
     if is_placeholder(record):
         path.unlink(missing_ok=True)
         return {"status": "deferred", "key": receipt_key}
