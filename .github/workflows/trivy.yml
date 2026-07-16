@@ -1,0 +1,75 @@
+name: trivy
+
+# Two independent scans:
+#   deps  - known-CVE Python packages in requirements.txt. Fast, no Docker;
+#           runs on every push/PR and fails the job on HIGH/CRITICAL.
+#   image - OS + package CVEs in the published GHCR images (web app w/
+#           Chromium, and the slim poller). Advisory only (doesn't block
+#           anything) since it scans what's already live, on a weekly cadence
+#           plus manual dispatch. Results land in the repo's Security tab.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 7 * * 1" # weekly Monday 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deps:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Scan requirements.txt for known-CVE dependencies
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: requirements.txt
+          format: sarif
+          output: trivy-deps.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-deps.sarif
+          category: trivy-deps
+
+  image:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - key: web
+            ref: ghcr.io/${{ github.repository }}:latest
+          - key: poller
+            ref: ghcr.io/${{ github.repository }}/poller:latest
+    steps:
+      - name: Scan ${{ matrix.image.key }} image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.image.ref }}
+          format: sarif
+          output: trivy-${{ matrix.image.key }}.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0" # advisory — report, don't fail the build
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.image.key }}.sarif
+          category: trivy-image-${{ matrix.image.key }}
