@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Scan requirements.txt for known-CVE dependencies
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: requirements.txt
@@ -59,7 +59,7 @@ jobs:
             ref: ghcr.io/${{ github.repository }}/poller:latest
     steps:
       - name: Scan ${{ matrix.image.key }} image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: ${{ matrix.image.ref }}
