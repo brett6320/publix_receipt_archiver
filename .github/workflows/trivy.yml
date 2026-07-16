@@ -12,6 +12,11 @@ name: trivy
 #           the image as bad after the fact. Gating the publish itself would
 #           mean scanning the freshly-built image before push, which needs
 #           docker-publish.yml restructured to build+load locally first.
+#
+# Known as of 2026-07-16: both images currently fail this gate on real
+# HIGH-severity base-OS CVEs (see the repo's Security tab for the full list,
+# e.g. CVE-2026-56000, CVE-2026-55999, CVE-2023-5574, CVE-2026-53615) — a base
+# image bump/rebuild is needed to clear it.
 
 on:
   push:
