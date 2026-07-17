@@ -1,0 +1,65 @@
+name: trivy-image
+
+# OS + package CVEs in the published GHCR images (web app w/ Chromium, and the
+# slim poller). Gating: fails on HIGH/CRITICAL.
+#
+# Triggers on docker-publish's completion (not the same push event that
+# triggers it) so it always scans the tag docker-publish just pushed, never a
+# stale one from a prior run — the two used to race on `push`, and the scan
+# would sometimes complete before docker-publish had finished publishing.
+# Only runs if docker-publish actually succeeded; a failed publish means
+# there's nothing new to scan. Also runs weekly + on manual dispatch to catch
+# newly-disclosed CVEs in an image nothing has re-published since.
+#
+# Uses --ignore-unfixed: only fail on CVEs Debian has actually shipped a fix
+# for. Base-image CVEs are otherwise dominated by not-yet-fixed-upstream
+# findings (perl, util-linux, xorg/mesa, ncurses) that no Dockerfile change
+# can clear — gating on those is a perpetual, unwinnable red build. The
+# Dockerfiles also run `apt-get upgrade` on top of the base image at build
+# time to pick up whatever Debian *has* patched since the base tag was baked.
+
+on:
+  workflow_run:
+    workflows: [docker-publish]
+    types: [completed]
+  schedule:
+    - cron: "0 7 * * 1" # weekly Monday 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    # docker-publish also runs (build-only, no push) on PRs — only rescan when
+    # its push-triggered run actually succeeded and published something new.
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - key: web
+            ref: ghcr.io/${{ github.repository }}:latest
+          - key: poller
+            ref: ghcr.io/${{ github.repository }}/poller:latest
+    steps:
+      - name: Scan ${{ matrix.image.key }} image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ matrix.image.ref }}
+          format: sarif
+          output: trivy-${{ matrix.image.key }}.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.image.key }}.sarif
+          category: trivy-image-${{ matrix.image.key }}

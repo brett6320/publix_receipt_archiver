@@ -1,33 +1,20 @@
 name: trivy
 
-# Two independent scans:
-#   deps  - known-CVE Python packages in requirements.txt. Fast, no Docker;
-#           runs on every push/PR and fails the job on HIGH/CRITICAL.
-#   image - OS + package CVEs in the published GHCR images (web app w/
-#           Chromium, and the slim poller). Gating: fails on HIGH/CRITICAL, on
-#           a weekly cadence plus manual dispatch and every push to main.
-#           NOTE: this scans the already-pushed `:latest` tag after
-#           docker-publish.yml has published it (they run in parallel on
-#           push), so a failure here doesn't block that publish — it flags
-#           the image as bad after the fact. Gating the publish itself would
-#           mean scanning the freshly-built image before push, which needs
-#           docker-publish.yml restructured to build+load locally first.
+# Known-CVE Python packages in requirements.txt. Fast, no Docker; runs on
+# every push/PR and fails the job on HIGH/CRITICAL.
 #
-# Both scans use --ignore-unfixed: only fail on CVEs Debian/PyPI has actually
-# shipped a fix for. Base-image CVEs are otherwise dominated by
-# not-yet-fixed-upstream findings (perl, util-linux, xorg/mesa, ncurses) that
-# no Dockerfile change can clear — gating on those is a perpetual, unwinnable
-# red build. The Dockerfiles also run `apt-get upgrade` on top of the base
-# image at build time to pick up whatever Debian *has* patched since the base
-# tag was baked.
+# Uses --ignore-unfixed: only fail on CVEs PyPI has actually shipped a fix
+# for — gating on not-yet-fixed-upstream findings is a perpetual, unwinnable
+# red build.
+#
+# (Published GHCR image scanning lives in trivy-image.yml — it has to trigger
+# off docker-publish's completion rather than the same push event, so it
+# can't share this workflow's `on:` block.)
 
 on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "0 7 * * 1" # weekly Monday 07:00 UTC
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -56,35 +43,3 @@ jobs:
         with:
           sarif_file: trivy-deps.sarif
           category: trivy-deps
-
-  image:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - key: web
-            ref: ghcr.io/${{ github.repository }}:latest
-          - key: poller
-            ref: ghcr.io/${{ github.repository }}/poller:latest
-    steps:
-      - name: Scan ${{ matrix.image.key }} image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: image
-          image-ref: ${{ matrix.image.ref }}
-          format: sarif
-          output: trivy-${{ matrix.image.key }}.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-${{ matrix.image.key }}.sarif
-          category: trivy-image-${{ matrix.image.key }}
